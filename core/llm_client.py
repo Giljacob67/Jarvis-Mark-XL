@@ -1,12 +1,17 @@
 """
 Local LLM client for MARK XL.
 
-Supports two backends — selected via  "llm_provider"  in config/api_keys.json:
+Supports three backends — selected via  "llm_provider"  in config/api_keys.json:
 
   "llm_provider": "ollama"   (default)
         Uses Ollama's native /api/chat endpoint.
         Download: https://ollama.com
         Default port: 11434
+
+  "llm_provider": "ollama_cloud"
+        Uses Ollama Cloud API (https://ollama.com/v1).
+        Requires "ollama_api_key" in config.
+        Models: qwen3-coder:480b-cloud, gpt-oss:120b-cloud, etc.
 
   "llm_provider": "openai"
         Uses any OpenAI-compatible server: LM Studio, Jan, LocalAI,
@@ -47,9 +52,33 @@ _DEFAULTS = {
 
 
 def get_llm_provider() -> str:
-    """Returns 'ollama' or 'openai' (covers LM Studio, LocalAI, Jan, etc.)."""
+    """Returns 'ollama', 'ollama_cloud', or 'openai' (covers LM Studio, LocalAI, Jan, etc.)."""
     raw = _load_config().get("llm_provider", "ollama").strip().lower()
-    return "openai" if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp") else "ollama"
+    if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp"):
+        return "openai"
+    elif raw in ("ollama_cloud", "ollamacloud"):
+        return "ollama_cloud"
+    return "ollama"
+
+
+def _is_ollama_cloud() -> bool:
+    """Check if configured to use Ollama Cloud API."""
+    return get_llm_provider() == "ollama_cloud"
+
+
+def _get_auth_headers() -> dict:
+    """Get authentication headers for Ollama Cloud API."""
+    cfg = _load_config()
+    api_key = cfg.get("ollama_api_key", "")
+    
+    # Also check environment variable
+    if not api_key:
+        import os
+        api_key = os.environ.get("OLLAMA_API_KEY", "")
+    
+    if api_key:
+        return {"Authorization": f"Bearer {api_key}"}
+    return {}
 
 
 def _load_config() -> dict:
@@ -62,11 +91,27 @@ def _load_config() -> dict:
 def ensure_ollama_running(timeout: int = 15) -> bool:
     """
     For Ollama: ping /api/tags; auto-launch 'ollama serve' if not running.
+    For Ollama Cloud: ping /v1/models with auth header.
     For OpenAI-compatible providers: just ping /v1/models (server must be started manually).
     Returns True if the LLM server is reachable.
     """
     url, _   = get_llm_settings()
     provider = get_llm_provider()
+
+    if provider == "ollama_cloud":
+        # Ollama Cloud API — requires auth
+        health = f"{url}/v1/models"
+        headers = _get_auth_headers()
+        try:
+            ok = requests.get(health, headers=headers, timeout=5).status_code == 200
+            if ok:
+                print(f"[LLM] Ollama Cloud API reachable at {url}")
+            else:
+                print(f"[LLM] Ollama Cloud API at {url} returned non-200. Check API key.")
+            return ok
+        except Exception as e:
+            print(f"[LLM] Cannot reach Ollama Cloud API at {url}. Error: {e}")
+            return False
 
     if provider == "openai":
         # OpenAI-compatible servers (LM Studio, LocalAI, etc.) must be started
@@ -146,6 +191,24 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": "hi"})
 
+    if provider == "ollama_cloud":
+        # Ollama Cloud API — uses OpenAI-compatible endpoint with auth
+        headers = _get_auth_headers()
+        payload = {
+            "model":      model,
+            "messages":   messages,
+            "stream":     False,
+            "max_tokens": 1,
+        }
+        try:
+            resp = requests.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
+            resp.raise_for_status()
+            print(f"[LLM] '{model}' ready (Ollama Cloud API).")
+            return True
+        except Exception as e:
+            print(f"[LLM] Warmup failed (non-fatal): {e}")
+            return False
+
     if provider == "openai":
         # OpenAI-compatible: just fire a minimal request to ensure the model is loaded.
         # No keep_alive or KV-cache priming available — server manages this internally.
@@ -198,13 +261,54 @@ def call_llm(
     timeout:  int = 120,
 ) -> dict:
     """
-    Non-streaming chat request.  Routes to Ollama or OpenAI-compatible backend.
+    Non-streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible backend.
 
     Returns:
         {"content": str, "tool_calls": list}
     """
     url, model = get_llm_settings()
     provider   = get_llm_provider()
+
+    if provider == "ollama_cloud":
+        # Ollama Cloud API — uses OpenAI-compatible endpoint with auth
+        endpoint = f"{url}/v1/chat/completions"
+        headers = _get_auth_headers()
+        payload: dict = {
+            "model":      model,
+            "messages":   messages,
+            "stream":     False,
+            "max_tokens": 150,
+        }
+        if tools:
+            payload["tools"]       = tools
+            payload["tool_choice"] = "auto"
+        try:
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            choice = resp.json().get("choices", [{}])[0]
+            msg    = choice.get("message", {})
+            # OpenAI tool_calls format → normalise to Ollama-style
+            raw_tc  = msg.get("tool_calls") or []
+            tc_list = [
+                {
+                    "id":       t.get("id", ""),
+                    "function": {
+                        "name":      t["function"]["name"],
+                        "arguments": (
+                            json.loads(t["function"]["arguments"])
+                            if isinstance(t["function"].get("arguments"), str)
+                            else t["function"].get("arguments", {})
+                        ),
+                    },
+                }
+                for t in raw_tc
+            ]
+            return {
+                "content":    (msg.get("content") or "").strip(),
+                "tool_calls": tc_list,
+            }
+        except Exception as e:
+            raise RuntimeError(f"Ollama Cloud API call failed: {e}")
 
     if provider == "openai":
         endpoint = f"{url}/v1/chat/completions"
@@ -305,7 +409,7 @@ def call_llm_text(
     Used by planner, executor, error_handler, code_helper, dev_agent.
     """
     url, default_model = get_llm_settings()
-    endpoint = f"{url}/api/chat"
+    provider = get_llm_provider()
     m        = model or default_model
 
     messages: list[dict] = []
@@ -313,6 +417,19 @@ def call_llm_text(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
+    if provider == "ollama_cloud":
+        # Ollama Cloud API — uses OpenAI-compatible endpoint with auth
+        endpoint = f"{url}/v1/chat/completions"
+        headers = _get_auth_headers()
+        payload = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
+        try:
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        except Exception as e:
+            raise RuntimeError(f"Ollama Cloud API text call failed: {e}")
+
+    endpoint = f"{url}/api/chat"
     payload = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
 
     try:
@@ -333,6 +450,122 @@ def call_llm_text(
         )
     except Exception as e:
         raise RuntimeError(f"LLM text call failed: {e}")
+
+
+def _stream_ollama_cloud(
+    messages: list,
+    tools:    list | None,
+    timeout:  int,
+) -> Generator[dict, None, None]:
+    """
+    Streaming backend for Ollama Cloud API (https://ollama.com/v1).
+
+    Uses OpenAI-compatible SSE format with Bearer token authentication.
+    """
+    url, model = get_llm_settings()
+    endpoint   = f"{url}/v1/chat/completions"
+    headers    = _get_auth_headers()
+
+    payload: dict = {
+        "model":      model,
+        "messages":   messages,
+        "stream":     True,
+        "max_tokens": 150,
+    }
+    if tools:
+        payload["tools"]       = tools
+        payload["tool_choice"] = "auto"
+
+    try:
+        with requests.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
+            resp.raise_for_status()
+            full_content = ""
+            buf          = ""
+            # tool_call fragments: index → {"id", "function": {"name", "arguments"}}
+            tc_fragments: dict[int, dict] = {}
+
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                # SSE lines look like: b"data: {...}" or b"data: [DONE]"
+                line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+
+                choice = chunk.get("choices", [{}])[0]
+                delta  = choice.get("delta", {})
+                text   = delta.get("content") or ""
+
+                full_content += text
+                buf          += text
+
+                # Accumulate sentence boundaries for streaming TTS
+                while True:
+                    m = _SENT_END.search(buf)
+                    if not m:
+                        break
+                    sentence = buf[: m.start() + 1].strip()
+                    buf      = buf[m.end():]
+                    if sentence:
+                        yield {"type": "sentence", "text": sentence}
+
+                # Accumulate streaming tool-call fragments
+                for tc in (delta.get("tool_calls") or []):
+                    idx = tc.get("index", 0)
+                    if idx not in tc_fragments:
+                        tc_fragments[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
+                    frag = tc_fragments[idx]
+                    frag["id"] = frag["id"] or tc.get("id", "")
+                    fn = tc.get("function", {})
+                    frag["function"]["name"]      += fn.get("name") or ""
+                    frag["function"]["arguments"] += fn.get("arguments") or ""
+
+                finish = choice.get("finish_reason")
+                if finish in ("stop", "tool_calls", "length"):
+                    break
+
+            # Flush any trailing content
+            if buf.strip():
+                yield {"type": "sentence", "text": buf.strip()}
+
+            # Parse accumulated tool-call argument strings → dicts
+            tool_calls: list = []
+            for idx in sorted(tc_fragments):
+                frag = tc_fragments[idx]
+                args = frag["function"]["arguments"]
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    pass   # leave as raw string; _execute_tool handles it
+                tool_calls.append({
+                    "id":       frag["id"],
+                    "function": {"name": frag["function"]["name"], "arguments": args},
+                })
+
+            yield {
+                "type":       "done",
+                "content":    full_content.strip(),
+                "tool_calls": tool_calls,
+            }
+
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(
+            f"Cannot reach Ollama Cloud API at {url}.\n"
+            "Check your internet connection and API key."
+        )
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Ollama Cloud API stream timed out.")
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"Ollama Cloud API HTTP error: {e.response.status_code}")
+    except Exception as e:
+        raise RuntimeError(f"Ollama Cloud API stream failed: {e}")
 
 
 def _stream_openai(
@@ -457,7 +690,7 @@ def call_llm_stream(
     timeout:  int = 120,
 ) -> Generator[dict, None, None]:
     """
-    Streaming chat request.  Routes to Ollama or OpenAI-compatible backend.
+    Streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible backend.
 
     Yields:
         {"type": "sentence", "text": str}   — each complete sentence as it arrives
@@ -467,6 +700,9 @@ def call_llm_stream(
     Tool calls always appear in the final "done" event.
     """
     provider = get_llm_provider()
+    if provider == "ollama_cloud":
+        yield from _stream_ollama_cloud(messages, tools, timeout)
+        return
     if provider == "openai":
         yield from _stream_openai(messages, tools, timeout)
         return
