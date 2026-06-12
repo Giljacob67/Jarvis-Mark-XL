@@ -628,6 +628,10 @@ class JarvisLocal:
       STT (Whisper/Vosk) → Ollama LLM (tool calling) → TTS (Edge/Kokoro/ElevenLabs)
     """
 
+    # Wake word configuration
+    WAKE_WORD = "jarvis"
+    WAKE_WORD_VARIANTS = ["jarvis", "járviz", "jarvis", "jarvys", "jarviss"]
+
     def __init__(self, ui: JarvisUI):
         self.ui               = ui
         self._config          = _load_config()
@@ -641,6 +645,60 @@ class JarvisLocal:
         self._conversation:   list[dict]  = []
 
         self.ui.on_text_command = self._on_text_command
+
+    # ------------------------------------------------------------------
+    # Wake word detection
+    # ------------------------------------------------------------------
+
+    def _check_wake_word(self, text: str) -> tuple[bool, str]:
+        """
+        Check if text contains the wake word "Jarvis".
+        Returns (is_wake_word_present, command_after_wake_word).
+        
+        Examples:
+            "Jarvis, qual é a temperatura?" → (True, "qual é a temperatura?")
+            "Jarvis abra o WhatsApp" → (True, "abra o WhatsApp")
+            "Olá, como vai?" → (False, "")
+        """
+        if not text:
+            return False, ""
+        
+        text_lower = text.lower().strip()
+        
+        # Check for wake word variants
+        for variant in self.WAKE_WORD_VARIANTS:
+            # Look for wake word at the beginning or after a pause
+            patterns = [
+                f"{variant},",           # "jarvis,"
+                f"{variant} ",           # "jarvis "
+                f"{variant}!",           # "jarvis!"
+                f"{variant}?",          # "jarvis?"
+                f"{variant}:",           # "jarvis:"
+            ]
+            
+            for pattern in patterns:
+                if text_lower.startswith(pattern):
+                    command = text[len(pattern):].strip()
+                    return True, command
+        
+        # Check if wake word appears anywhere in the text (with some flexibility)
+        for variant in self.WAKE_WORD_VARIANTS:
+            if variant in text_lower:
+                # Find the position after the wake word
+                idx = text_lower.find(variant)
+                after_wake = text[idx + len(variant):].strip()
+                
+                # Remove leading punctuation if present
+                if after_wake and after_wake[0] in ",.!?;:":
+                    after_wake = after_wake[1:].strip()
+                
+                if after_wake:
+                    return True, after_wake
+                else:
+                    # Just the wake word without command
+                    return True, ""
+        
+        return False, ""
 
     # ------------------------------------------------------------------
     # System prompt
@@ -1102,7 +1160,7 @@ class JarvisLocal:
     # ------------------------------------------------------------------
 
     def _listen_whisper(self) -> None:
-        """Mic → VAD → Whisper → LLM loop."""
+        """Mic → VAD → Whisper → Wake Word Check → LLM loop."""
         vad = _VADBuffer()
         q: queue.Queue = queue.Queue(maxsize=200)
 
@@ -1123,7 +1181,7 @@ class JarvisLocal:
                 blocksize=BLOCK_SIZE,
                 callback=callback,
             ):
-                self.ui.write_log("SYS: Mic active (Whisper STT).")
+                self.ui.write_log("SYS: Mic active (Whisper STT) — Wake word: JARVIS")
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)
@@ -1132,7 +1190,18 @@ class JarvisLocal:
                             self.ui.set_state("THINKING")
                             text = self._stt.transcribe(audio)
                             if text.strip():
-                                self._process_message(text)
+                                # Check for wake word
+                                is_wake, command = self._check_wake_word(text)
+                                if is_wake:
+                                    if command:
+                                        self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
+                                        self._process_message(command)
+                                    else:
+                                        # Just the wake word - respond with a short acknowledgment
+                                        self.ui.write_log(f"WAKE: '{text}' (no command)")
+                                        self.speak("Sim?")
+                                else:
+                                    self.ui.write_log(f"SKIP: '{text}' (no wake word)")
                     except queue.Empty:
                         pass
         except Exception as e:
@@ -1140,7 +1209,7 @@ class JarvisLocal:
             traceback.print_exc()
 
     def _listen_vosk(self) -> None:
-        """Mic → Vosk streaming → LLM loop."""
+        """Mic → Vosk streaming → Wake Word Check → LLM loop."""
         q: queue.Queue = queue.Queue(maxsize=200)
 
         def callback(indata, frames, time_info, status):
@@ -1160,13 +1229,24 @@ class JarvisLocal:
                 blocksize=4096,
                 callback=callback,
             ):
-                self.ui.write_log("SYS: Mic active (Vosk STT).")
+                self.ui.write_log("SYS: Mic active (Vosk STT) — Wake word: JARVIS")
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)
                         text, is_final = self._stt.process_chunk(chunk.tobytes())
                         if is_final and text.strip():
-                            self._process_message(text)
+                            # Check for wake word
+                            is_wake, command = self._check_wake_word(text)
+                            if is_wake:
+                                if command:
+                                    self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
+                                    self._process_message(command)
+                                else:
+                                    # Just the wake word - respond with a short acknowledgment
+                                    self.ui.write_log(f"WAKE: '{text}' (no command)")
+                                    self.speak("Sim?")
+                            else:
+                                self.ui.write_log(f"SKIP: '{text}' (no wake word)")
                     except queue.Empty:
                         pass
         except Exception as e:
