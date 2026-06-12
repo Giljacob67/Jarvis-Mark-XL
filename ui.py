@@ -1022,11 +1022,12 @@ class SetupOverlay(QWidget):
         layout.addWidget(_lbl("LOCAL LLM", 7, col=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
 
-        # Provider toggle: Ollama vs LM Studio / OpenAI-compatible
+        # Provider toggle: Ollama Local vs Ollama Cloud vs LM Studio / OpenAI-compatible
         llm_prov_row, self._llm_prov_btns = _toggle_row(
             [
-                ("ollama", "🦙 Ollama"),
-                ("openai", "🔌 LM Studio / OpenAI"),
+                ("ollama",       "🦙 Ollama Local"),
+                ("ollama_cloud", "☁️ Ollama Cloud"),
+                ("openai",       "🔌 LM Studio / OpenAI"),
             ],
             lambda: self._sel_llm_provider,
             self._set_llm_provider,
@@ -1034,10 +1035,13 @@ class SetupOverlay(QWidget):
         layout.addLayout(llm_prov_row)
 
         # Hint label — changes based on provider
-        _ollama_hint = "ollama.com  ·  run: ollama pull qwen2.5:3b"
+        _ollama_hint = "localhost:11434  ·  run: ollama pull qwen2.5:3b"
+        _ollama_cloud_hint = "ollama.com/v1  ·  models run on Ollama's cloud GPUs"
         _openai_hint = "lmstudio.ai  ·  start Local Server first, then pick model"
         self._llm_hint_lbl = _lbl(
-            _openai_hint if self._sel_llm_provider == "openai" else _ollama_hint,
+            _ollama_cloud_hint if self._sel_llm_provider == "ollama_cloud"
+            else _openai_hint if self._sel_llm_provider == "openai"
+            else _ollama_hint,
             7, col=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft
         )
         layout.addWidget(self._llm_hint_lbl)
@@ -1248,20 +1252,24 @@ class SetupOverlay(QWidget):
         if hasattr(self, "_llm_url_input"):
             if key == "openai":
                 self._llm_url_input.setPlaceholderText("http://localhost:1234")
-                # Only override if it still looks like an Ollama default URL
-                cur = self._llm_url_input.text().strip()
-                if not cur or cur == "http://localhost:11434":
-                    self._llm_url_input.setText("http://localhost:1234")
+                new_url = "http://localhost:1234"
+            elif key == "ollama_cloud":
+                self._llm_url_input.setPlaceholderText("https://ollama.com")
+                new_url = "https://ollama.com"
             else:
                 self._llm_url_input.setPlaceholderText("http://localhost:11434")
-                cur = self._llm_url_input.text().strip()
-                if not cur or cur == "http://localhost:1234":
-                    self._llm_url_input.setText("http://localhost:11434")
+                new_url = "http://localhost:11434"
+            # Only set URL if it's a default URL (don't overwrite user-customised URLs)
+            cur = self._llm_url_input.text().strip()
+            if cur in ("", "http://localhost:11434", "http://localhost:1234", "https://ollama.com"):
+                self._llm_url_input.setText(new_url)
         if hasattr(self, "_llm_hint_lbl"):
-            if key == "openai":
-                self._llm_hint_lbl.setText("lmstudio.ai  ·  start Local Server first, then pick model")
-            else:
-                self._llm_hint_lbl.setText("ollama.com  ·  run: ollama pull qwen2.5:3b")
+            hints = {
+                "ollama":       "localhost:11434  ·  run: ollama pull qwen2.5:3b",
+                "ollama_cloud": "ollama.com/v1  ·  models run on Ollama's cloud GPUs",
+                "openai":       "lmstudio.ai  ·  start Local Server first, then pick model",
+            }
+            self._llm_hint_lbl.setText(hints.get(key, ""))
 
     def _set_stt(self, key: str):
         self._sel_stt = key
@@ -1325,7 +1333,11 @@ class SetupOverlay(QWidget):
             tts_speed = "1.0"
 
         _provider = getattr(self, "_sel_llm_provider", "ollama")
-        _default_url = "http://localhost:1234" if _provider == "openai" else "http://localhost:11434"
+        _default_url = (
+            "http://localhost:1234" if _provider == "openai"
+            else "https://ollama.com" if _provider == "ollama_cloud"
+            else "http://localhost:11434"
+        )
         cfg = {
             "stt_engine":         self._sel_stt,
             "stt_model":          stt_model,
