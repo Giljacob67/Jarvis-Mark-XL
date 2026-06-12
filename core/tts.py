@@ -339,9 +339,19 @@ class KokoroTTSEngine:
 class ElevenLabsTTSEngine:
     """ElevenLabs cloud TTS – API key required."""
 
-    def __init__(self, api_key: str, voice_id: str = "pNInz6obpgDQGcFmaJgB"):
+    def __init__(
+        self,
+        api_key: str,
+        voice_id: str = "pNInz6obpgDQGcFmaJgB",
+        stability: float = 0.5,
+        similarity_boost: float = 0.75,
+        speed: float = 1.0,
+    ):
         self.api_key  = api_key
         self.voice_id = voice_id
+        self.stability = stability
+        self.similarity_boost = similarity_boost
+        self.speed = speed
 
     def speak(self, text: str) -> None:
         import requests
@@ -352,7 +362,11 @@ class ElevenLabsTTSEngine:
         payload = {
             "text":     text,
             "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            "voice_settings": {
+                "stability": self.stability,
+                "similarity_boost": self.similarity_boost,
+                "speed": self.speed,
+            },
         }
         resp = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
@@ -419,9 +433,18 @@ def create_tts_player(config: dict) -> TTSPlayer:
         speed  = float(config.get("tts_speed", 1.0))
         engine = KokoroTTSEngine(voice=voice, speed=speed)
     elif engine_name == "elevenlabs":
-        api_key  = config.get("elevenlabs_api_key", "")
-        voice_id = config.get("tts_voice", "pNInz6obpgDQGcFmaJgB")
-        engine   = ElevenLabsTTSEngine(api_key=api_key, voice_id=voice_id)
+        api_key          = config.get("elevenlabs_api_key", "")
+        voice_id         = config.get("tts_voice", "pNInz6obpgDQGcFmaJgB")
+        stability        = float(config.get("tts_stability", 0.5))
+        similarity_boost = float(config.get("tts_similarity_boost", 0.75))
+        speed            = float(config.get("tts_speed", 1.0))
+        engine = ElevenLabsTTSEngine(
+            api_key=api_key,
+            voice_id=voice_id,
+            stability=stability,
+            similarity_boost=similarity_boost,
+            speed=speed,
+        )
     else:   # edgetts (default)
         voice  = config.get("tts_voice", "en-US-GuyNeural")
         engine = EdgeTTSEngine(voice=voice)
