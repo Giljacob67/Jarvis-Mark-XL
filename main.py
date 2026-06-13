@@ -631,7 +631,11 @@ class JarvisLocal:
 
     # Wake word configuration
     WAKE_WORD = "jarvis"
-    WAKE_WORD_VARIANTS = ["jarvis", "járviz", "jarvis", "jarvys", "jarviss"]
+    WAKE_WORD_VARIANTS = [
+        "jarvis", "járvis", "jarviz", "jarvys", "jarviss", "jarves", "jarvi",
+        # Common Whisper misrecognitions of "Jarvis":
+        "travis", "trevis", "tarvis", "jarvist", "jarvas",
+    ]
 
     def __init__(self, ui: JarvisUI):
         self.ui               = ui
