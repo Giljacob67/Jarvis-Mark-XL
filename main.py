@@ -1081,6 +1081,7 @@ class JarvisLocal:
         """
         self.ui.set_state("THINKING")
         self.ui.write_log(f"You: {user_text}")
+        self.ui.add_history("user", user_text)
 
         self._conversation.append({"role": "user", "content": user_text})
 
@@ -1113,6 +1114,7 @@ class JarvisLocal:
                         # the next one.
                         _streamed.append(event["text"])
                         self.speak(event["text"])
+                        self.ui.stream_sentence(event["text"])
                     elif event["type"] == "done":
                         final_content    = event["content"]
                         final_tool_calls = event["tool_calls"]
@@ -1123,17 +1125,18 @@ class JarvisLocal:
             # ── No tool calls: pure conversational reply ─────────────────────
             if not final_tool_calls:
                 if _streamed:
-                    # Sentences already queued to TTS — just update history/log.
+                    # Sentences already shown in log via stream_sentence — skip full write_log.
                     assistant_msg = {"role": "assistant", "content": final_content}
                     messages.append(assistant_msg)
                     self._conversation.append(assistant_msg)
-                    self.ui.write_log(f"Jarvis: {final_content}")
+                    self.ui.add_history("jarvis", final_content)
                 elif final_content:
                     # Very short response (no sentence boundary) — speak now.
                     assistant_msg = {"role": "assistant", "content": final_content}
                     messages.append(assistant_msg)
                     self._conversation.append(assistant_msg)
                     self.ui.write_log(f"Jarvis: {final_content}")
+                    self.ui.add_history("jarvis", final_content)
                     self.speak(final_content)
                 break
 
@@ -1165,6 +1168,7 @@ class JarvisLocal:
                 messages.append(assistant_msg2)
                 self._conversation.append(assistant_msg2)
                 self.ui.write_log(f"Jarvis: {final_content}")
+                self.ui.add_history("jarvis", final_content)
                 if not _streamed:
                     self.speak(final_content)
                 break
@@ -1221,6 +1225,7 @@ class JarvisLocal:
                 messages.append(_amsg)
                 self._conversation.append(_amsg)
                 self.ui.write_log(f"Jarvis: {_ack}")
+                self.ui.add_history("jarvis", _ack)
                 self.speak(_ack)
                 break
 
@@ -1231,6 +1236,7 @@ class JarvisLocal:
                 messages.append(_amsg)
                 self._conversation.append(_amsg)
                 self.ui.write_log(f"Jarvis: {_reply}")
+                self.ui.add_history("jarvis", _reply)
                 self.speak(_reply)
                 break
 

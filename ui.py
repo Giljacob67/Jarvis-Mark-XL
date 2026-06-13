@@ -24,8 +24,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QTextEdit,
-    QVBoxLayout, QWidget, QProgressBar,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget,
+    QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QProgressBar,
 )
 
 def _base_dir() -> Path:
@@ -639,6 +639,130 @@ class LogWidget(QTextEdit):
             self.setTextCursor(cur)
             self.ensureCursorVisible()
             QTimer.singleShot(20, self._next)
+
+
+class HistoryWidget(QTextEdit):
+    _sig = pyqtSignal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFont(QFont("Courier New", 8))
+        self.setStyleSheet(f"""
+            QTextEdit {{
+                background: {C.PANEL}; color: {C.TEXT};
+                border: none; padding: 4px;
+            }}
+            QScrollBar:vertical {{ background: {C.BG}; width: 8px; border: none; }}
+            QScrollBar::handle:vertical {{
+                background: {C.BORDER_B}; border-radius: 4px; min-height: 20px;
+            }}
+        """)
+        self._sig.connect(self._add_turn)
+
+    def add_turn(self, role: str, text: str):
+        self._sig.emit(role, text)
+
+    def _add_turn(self, role: str, text: str):
+        cur = self.textCursor()
+        cur.movePosition(cur.MoveOperation.End)
+        lbl_fmt = cur.charFormat()
+        lbl_fmt.setForeground(QBrush(qcol(C.TEXT_DIM)))
+        txt_fmt = cur.charFormat()
+        if role == "user":
+            txt_fmt.setForeground(QBrush(qcol(C.WHITE)))
+            cur.insertText("You:    ", lbl_fmt)
+        else:
+            txt_fmt.setForeground(QBrush(qcol(C.PRI)))
+            cur.insertText("Jarvis: ", lbl_fmt)
+        cur.insertText(text[:400] + "\n", txt_fmt)
+        self.setTextCursor(cur)
+        self.ensureCursorVisible()
+
+
+class MemoryEditorWidget(QWidget):
+    def __init__(self, memory_path: Path, parent=None):
+        super().__init__(parent)
+        self._path = memory_path
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(3)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setColumnCount(2)
+        self._tree.setStyleSheet(f"""
+            QTreeWidget {{
+                background: {C.PANEL}; color: {C.TEXT};
+                border: none; font-family: 'Courier New'; font-size: 8pt;
+            }}
+            QTreeWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.PRI}; }}
+            QHeaderView::section {{ background: {C.DARK}; color: {C.TEXT_DIM}; border: none; }}
+        """)
+        lay.addWidget(self._tree, stretch=1)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(4)
+        self._del_btn = QPushButton("✕  Delete")
+        self._del_btn.setFixedHeight(22)
+        self._del_btn.setFont(QFont("Courier New", 7))
+        self._del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._del_btn.setStyleSheet(f"""
+            QPushButton {{ background: #140006; color: {C.RED};
+                border: 1px solid {C.RED}; border-radius: 3px; }}
+            QPushButton:hover {{ background: #280010; }}
+        """)
+        self._del_btn.clicked.connect(self._delete_selected)
+        ref_btn = QPushButton("↻  Refresh")
+        ref_btn.setFixedHeight(22)
+        ref_btn.setFont(QFont("Courier New", 7))
+        ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ref_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px; }}
+            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI}; }}
+        """)
+        ref_btn.clicked.connect(self.refresh)
+        btn_row.addWidget(self._del_btn)
+        btn_row.addWidget(ref_btn)
+        lay.addLayout(btn_row)
+        self.refresh()
+
+    def refresh(self):
+        self._tree.clear()
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8")) if self._path.exists() else {}
+        except Exception:
+            data = {}
+        for cat, entries in data.items():
+            cat_item = QTreeWidgetItem(self._tree, [cat.upper()])
+            cat_item.setForeground(0, QBrush(qcol(C.ACC2)))
+            cat_item.setFont(0, QFont("Courier New", 7, QFont.Weight.Bold))
+            if isinstance(entries, dict):
+                for key, val in entries.items():
+                    v = val.get("value", str(val)) if isinstance(val, dict) else str(val)
+                    child = QTreeWidgetItem(cat_item, [f"  {key}", v[:60]])
+                    child.setForeground(0, QBrush(qcol(C.TEXT)))
+                    child.setForeground(1, QBrush(qcol(C.TEXT_DIM)))
+            cat_item.setExpanded(True)
+
+    def _delete_selected(self):
+        item = self._tree.currentItem()
+        if not item or not item.parent():
+            return
+        cat = item.parent().text(0).lower()
+        key = item.text(0).strip()
+        box = QMessageBox(self)
+        box.setWindowTitle("Confirmar")
+        box.setText(f"Deletar memória '{cat}/{key}'?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() == QMessageBox.StandardButton.Yes:
+            from memory.memory_manager import forget
+            forget(key, cat)
+            self.refresh()
+
 
 _FILE_ICONS = {
     "image":   ("🖼", "#00d4ff"), "video":   ("🎬", "#ff6b00"),
@@ -1479,6 +1603,7 @@ class MainWindow(QMainWindow):
     _log_sig     = pyqtSignal(str)
     _state_sig   = pyqtSignal(str)
     _startup_sig = pyqtSignal(str, str)  # action, data — thread-safe startup panel control
+    _history_sig = pyqtSignal(str, str)  # role, text — thread-safe history panel update
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1536,6 +1661,7 @@ class MainWindow(QMainWindow):
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
         self._startup_sig.connect(self._on_startup_sig)
+        self._history_sig.connect(self._history.add_turn)
 
         self._overlay: SetupOverlay | None = None
         self._startup_panel: StartupPanel | None = None
@@ -1792,9 +1918,30 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
             return l
 
-        lay.addWidget(_sec("ACTIVITY LOG"))
+        _tabs = QTabWidget()
+        _tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {C.BORDER}; background: {C.PANEL}; }}
+            QTabBar::tab {{
+                background: {C.DARK}; color: {C.TEXT_DIM};
+                font-family: 'Courier New'; font-size: 7pt;
+                padding: 3px 10px; border: 1px solid {C.BORDER}; border-bottom: none;
+            }}
+            QTabBar::tab:selected {{
+                color: {C.PRI}; border-bottom: 2px solid {C.PRI}; background: {C.PANEL};
+            }}
+            QTabBar::tab:hover {{ color: {C.TEXT_MED}; }}
+        """)
         self._log = LogWidget()
-        lay.addWidget(self._log, stretch=1)
+        _tabs.addTab(self._log, "LOG")
+        self._history = HistoryWidget()
+        _tabs.addTab(self._history, "HIST")
+        _mem_path = BASE_DIR / "memory" / "long_term.json"
+        self._mem_editor = MemoryEditorWidget(_mem_path)
+        _tabs.addTab(self._mem_editor, "MEM")
+        _tabs.currentChanged.connect(
+            lambda i: self._mem_editor.refresh() if i == 2 else None
+        )
+        lay.addWidget(_tabs, stretch=1)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
@@ -2103,6 +2250,12 @@ class JarvisUI:
 
     def write_log(self, text: str):
         self._win._log_sig.emit(text)
+
+    def stream_sentence(self, text: str):
+        self._win._log_sig.emit(f"Jarvis: {text}")
+
+    def add_history(self, role: str, text: str):
+        self._win._history_sig.emit(role, text)
 
     # ── Startup panel (all thread-safe) ──────────────────────────────────
     def show_startup_panel(self) -> None:
