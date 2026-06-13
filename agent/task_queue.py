@@ -1,9 +1,13 @@
+import json
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Any
+
+_RESULTS_LOG = Path.home() / ".jarvis" / "task_results.jsonl"
 
 
 class TaskStatus(Enum):
@@ -29,9 +33,10 @@ class Task:
     status:      TaskStatus = field(compare=False, default=TaskStatus.PENDING)
     result:      Any        = field(compare=False, default=None)
     error:       str        = field(compare=False, default="")
-    speak:       Any        = field(compare=False, default=None)   
-    on_complete: Any        = field(compare=False, default=None)  
-    cancel_flag: threading.Event = field(compare=False, default_factory=threading.Event)
+    speak:         Any        = field(compare=False, default=None)
+    on_complete:   Any        = field(compare=False, default=None)
+    on_step_start: Any        = field(compare=False, default=None)
+    cancel_flag:   threading.Event = field(compare=False, default_factory=threading.Event)
 
 
 class TaskQueue:
@@ -72,20 +77,22 @@ class TaskQueue:
 
     def submit(
         self,
-        goal:        str,
-        priority:    TaskPriority = TaskPriority.NORMAL,
-        speak:       Callable | None = None,
-        on_complete: Callable | None = None,
+        goal:          str,
+        priority:      TaskPriority = TaskPriority.NORMAL,
+        speak:         Callable | None = None,
+        on_complete:   Callable | None = None,
+        on_step_start: Callable | None = None,
     ) -> str:
 
         task_id = str(uuid.uuid4())[:8]
         task    = Task(
-            priority    = priority.value,
-            created_at  = time.time(),
-            task_id     = task_id,
-            goal        = goal,
-            speak       = speak,
-            on_complete = on_complete,
+            priority      = priority.value,
+            created_at    = time.time(),
+            task_id       = task_id,
+            goal          = goal,
+            speak         = speak,
+            on_complete   = on_complete,
+            on_step_start = on_step_start,
         )
 
         with self._condition:
@@ -171,14 +178,31 @@ class TaskQueue:
                 return task
         return None
 
+    def _persist_result(self, task: Task) -> None:
+        try:
+            _RESULTS_LOG.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "task_id":    task.task_id,
+                "goal":       task.goal,
+                "status":     task.status.value,
+                "result":     task.result,
+                "error":      task.error,
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            with _RESULTS_LOG.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"[TaskQueue] ⚠️ Could not persist result: {e}")
+
     def _run_task(self, task: Task) -> None:
         print(f"[TaskQueue] ▶️ Running: [{task.task_id}] {task.goal[:60]}")
         try:
             executor = self._get_executor()
             result   = executor.execute(
-                goal        = task.goal,
-                speak       = task.speak,
-                cancel_flag = task.cancel_flag,
+                goal          = task.goal,
+                speak         = task.speak,
+                cancel_flag   = task.cancel_flag,
+                on_step_start = task.on_step_start,
             )
 
             with self._lock:
@@ -188,6 +212,8 @@ class TaskQueue:
                     task.status = TaskStatus.COMPLETED
                     task.result = result
                 self._active_count -= 1
+
+            self._persist_result(task)
 
             if task.on_complete and not task.cancel_flag.is_set():
                 try:
@@ -202,6 +228,7 @@ class TaskQueue:
                 task.status = TaskStatus.FAILED
                 task.error  = str(e)
                 self._active_count -= 1
+            self._persist_result(task)
             print(f"[TaskQueue] ❌ Failed: [{task.task_id}] {e}")
 
         with self._condition:

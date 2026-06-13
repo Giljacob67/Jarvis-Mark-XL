@@ -2,12 +2,13 @@
 MARK XL — Agent Executor
 Replaces google.generativeai with local Ollama via core.llm_client.
 """
+import datetime
 import json
+import random
 import re
 import sys
 import threading
 import subprocess
-import tempfile
 import os
 from pathlib import Path
 from typing import Callable
@@ -29,6 +30,16 @@ BASE_DIR = get_base_dir()
 # ---------------------------------------------------------------------------
 # Code generation helper (replaces _run_generated_code with Gemini)
 # ---------------------------------------------------------------------------
+
+def _load_exec_config() -> bool:
+    """Returns allow_generated_code_execution flag from config (default True)."""
+    config_path = BASE_DIR / "config" / "api_keys.json"
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        return bool(cfg.get("allow_generated_code_execution", True))
+    except Exception:
+        return True
+
 
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
     if speak:
@@ -68,24 +79,34 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         code = call_llm_text(prompt, system=system)
         code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(code)
-            tmp_path = f.name
-
-        print(f"[Executor] 🐍 Running generated code: {tmp_path}")
-
-        result = subprocess.run(
-            [sys.executable, tmp_path],
-            capture_output=True, text=True,
-            timeout=120, cwd=str(Path.home()),
+        # Always persist to a visible audit folder — never anonymous temp files
+        audit_dir = home / "JarvisGeneratedCode"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        stamp      = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        audit_path = audit_dir / f"task_{stamp}.py"
+        audit_path.write_text(
+            f"# Task: {description}\n# Generated: {stamp}\n\n{code}",
+            encoding="utf-8",
         )
+        print(f"[Executor] 📝 Code saved for review: {audit_path}")
+        print(f"[Executor] --- Generated code (first 500 chars) ---\n{code[:500]}\n---")
 
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        allow_exec = _load_exec_config()
+        if not allow_exec:
+            msg = (
+                f"Code written to {audit_path} — auto-execution disabled. "
+                "Set allow_generated_code_execution=true in config to enable, sir."
+            )
+            if speak:
+                speak("Code saved to JarvisGeneratedCode for your review, sir.")
+            return msg
+
+        print(f"[Executor] 🐍 Running: {audit_path}")
+        result = subprocess.run(
+            [sys.executable, str(audit_path)],
+            capture_output=True, text=True,
+            timeout=120, cwd=str(home),
+        )
 
         output = result.stdout.strip()
         error  = result.stderr.strip()
@@ -251,13 +272,14 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
 
 class AgentExecutor:
 
-    MAX_REPLAN_ATTEMPTS = 2
+    MAX_REPLAN_ATTEMPTS = 3
 
     def execute(
         self,
-        goal:        str,
-        speak:       Callable | None        = None,
-        cancel_flag: threading.Event | None = None,
+        goal:          str,
+        speak:         Callable | None        = None,
+        cancel_flag:   threading.Event | None = None,
+        on_step_start: Callable | None        = None,
     ) -> str:
         print(f"\n[Executor] 🎯 Goal: {goal}")
 
@@ -289,6 +311,11 @@ class AgentExecutor:
                 params   = _inject_context(params, tool, step_results, goal=goal)
 
                 print(f"\n[Executor] ▶️ Step {step_num}: [{tool}] {desc}")
+                if on_step_start:
+                    try:
+                        on_step_start(step_num, tool, desc)
+                    except Exception:
+                        pass
 
                 attempt = 1
                 step_ok = False
@@ -317,7 +344,8 @@ class AgentExecutor:
 
                         if decision == ErrorDecision.RETRY:
                             attempt += 1
-                            import time; time.sleep(2)
+                            import time
+                            time.sleep(min(2 ** attempt, 30) + random.uniform(0, 1))
                             continue
 
                         elif decision == ErrorDecision.SKIP:

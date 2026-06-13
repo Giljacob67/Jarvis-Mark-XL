@@ -1,5 +1,6 @@
 import json
-from datetime import datetime
+import shutil
+from datetime import datetime, date
 from threading import Lock
 from pathlib import Path
 import sys
@@ -14,8 +15,20 @@ def get_base_dir() -> Path:
 BASE_DIR         = get_base_dir()
 MEMORY_PATH      = BASE_DIR / "memory" / "long_term.json"
 _lock            = Lock()
-MAX_VALUE_LENGTH = 380
-MEMORY_MAX_CHARS = 2200
+MAX_VALUE_LENGTH = 600
+MEMORY_MAX_CHARS = 6000
+MEMORY_BACKUP_MAX = 7   # keep last 7 daily backups
+
+# Categories ordered by deletion priority (higher = deleted first when trimming)
+_CATEGORY_WEIGHT = {
+    "identity":      0,   # never deleted
+    "preferences":   1,
+    "relationships": 2,
+    "projects":      3,
+    "wishes":        4,
+    "notes":         5,   # deleted first
+}
+_PROTECTED_CATEGORIES = {"identity"}
 
 def _empty_memory() -> dict:
     return {
@@ -55,23 +68,58 @@ def _all_entries(memory: dict) -> list[tuple]:
     return entries
 
 
+def _trim_score(cat: str, entry: dict) -> float:
+    """Higher score = deleted first. Protected categories always score 0."""
+    if cat in _PROTECTED_CATEGORIES:
+        return 0.0
+    cat_weight = _CATEGORY_WEIGHT.get(cat, 5)
+    updated_str = entry.get("updated", "2000-01-01")
+    try:
+        days_old = (date.today() - date.fromisoformat(updated_str)).days
+    except ValueError:
+        days_old = 0
+    return days_old * 0.6 + cat_weight * 0.4
+
+
 def _trim_to_limit(memory: dict) -> dict:
     if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
         return memory
     entries = _all_entries(memory)
-    entries.sort(key=lambda t: t[2].get("updated", "0000-00-00"))
+    # Sort by deletion priority: highest score deleted first; protected items last
+    entries.sort(key=lambda t: -_trim_score(t[0], t[2]))
     for cat, key, _ in entries:
+        if cat in _PROTECTED_CATEGORIES:
+            continue
         if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
             break
         del memory[cat][key]
         print(f"[Memory] 🗑️  Trimmed {cat}/{key}")
     return memory
 
+def _rotate_backups() -> None:
+    """Keep at most MEMORY_BACKUP_MAX daily backup files."""
+    today = date.today().isoformat()
+    backup = MEMORY_PATH.parent / f"long_term_{today}.json"
+    if MEMORY_PATH.exists() and not backup.exists():
+        try:
+            shutil.copy2(MEMORY_PATH, backup)
+        except Exception as e:
+            print(f"[Memory] ⚠️ Backup failed: {e}")
+    # prune old backups
+    backups = sorted(MEMORY_PATH.parent.glob("long_term_*.json"))
+    for old in backups[:-MEMORY_BACKUP_MAX]:
+        try:
+            old.unlink()
+        except Exception:
+            pass
+
+
 def save_memory(memory: dict) -> None:
     if not isinstance(memory, dict):
         return
     memory = _trim_to_limit(memory)
     MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_backups()
     with _lock:
         MEMORY_PATH.write_text(
             json.dumps(memory, indent=2, ensure_ascii=False),

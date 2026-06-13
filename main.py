@@ -62,6 +62,7 @@ import re
 import sys
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
 from pathlib import Path
 
@@ -779,6 +780,32 @@ class JarvisLocal:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"{tool_name} encountered an error.")
 
+    def _confirm_tool(self, name: str, args: dict) -> bool:
+        """Show a blocking Qt confirmation dialog. Returns True if approved."""
+        try:
+            from PyQt6.QtWidgets import QMessageBox, QApplication
+            action_str = f"{name}"
+            if args:
+                key_args = {k: v for k, v in args.items() if k not in ("player",)}
+                action_str += f"\n{key_args}"
+            app = QApplication.instance()
+            if app is None:
+                return True  # no UI — allow by default
+            box = QMessageBox()
+            box.setWindowTitle("Jarvis — Confirm Action")
+            box.setText(f"Confirm: {action_str}?")
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            # 15s auto-reject via singleShot
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(15_000, lambda: box.reject())
+            return box.exec() == QMessageBox.StandardButton.Yes
+        except Exception as e:
+            print(f"[Confirm] Dialog error: {e} — allowing by default")
+            return True
+
     # ------------------------------------------------------------------
     # Live reconfigure (called when user clicks Apply in Configure panel)
     # ------------------------------------------------------------------
@@ -866,56 +893,68 @@ class JarvisLocal:
                 self.ui.set_state("LISTENING")
             return "__SILENT__"
 
-        result = "Done."
-        try:
+        # Confirmation matrix — ask user before running sensitive tools
+        _cfg = _load_config()
+        _CONFIRM_TOOLS = set(_cfg.get(
+            "tool_requires_confirm",
+            ["send_message", "app_installer", "computer_control"],
+        ))
+        if name in _CONFIRM_TOOLS or (
+            name == "file_controller" and args.get("action") in ("delete", "trash")
+        ):
+            if not self._confirm_tool(name, args):
+                return "Action cancelled by user."
+
+        _tool_timeout = _cfg.get("tool_timeout_sec", 45)
+
+        def _dispatch() -> str:
             if name == "open_app":
                 r = open_app(parameters=args, response=None, player=self.ui)
-                result = r or f"Opened {args.get('app_name')}."
+                return r or f"Opened {args.get('app_name')}."
 
             elif name == "weather_report":
                 r = weather_action(parameters=args, player=self.ui)
-                result = r or "Weather delivered."
+                return r or "Weather delivered."
 
             elif name == "browser_control":
                 r = browser_control(parameters=args, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "file_controller":
                 r = file_controller(parameters=args, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "send_message":
                 r = send_message(parameters=args, response=None, player=self.ui, session_memory=None)
-                result = r or f"Message sent to {args.get('receiver')}."
+                return r or f"Message sent to {args.get('receiver')}."
 
             elif name == "reminder":
                 r = reminder(parameters=args, response=None, player=self.ui)
-                result = r or "Reminder set."
+                return r or "Reminder set."
 
             elif name == "youtube_video":
                 r = youtube_video(parameters=args, response=None, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "screen_process":
-                # Synchronous call — returns analysis text which the LLM can speak
                 r = screen_process(parameters=args, response=None, player=self.ui, session_memory=None)
-                result = r if isinstance(r, str) and r else "Screen analyzed."
+                return r if isinstance(r, str) and r else "Screen analyzed."
 
             elif name == "computer_settings":
                 r = computer_settings(parameters=args, response=None, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "desktop_control":
                 r = desktop_control(parameters=args, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "code_helper":
                 r = code_helper(parameters=args, player=self.ui, speak=self.speak)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "dev_agent":
                 r = dev_agent(parameters=args, player=self.ui, speak=self.speak)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "agent_task":
                 from agent.task_queue import get_queue, TaskPriority
@@ -930,44 +969,87 @@ class JarvisLocal:
                 task_id = get_queue().submit(
                     goal=args.get("goal", ""), priority=priority, speak=self.speak
                 )
-                result = f"Task started (ID: {task_id})."
+                return f"Task started (ID: {task_id})."
 
             elif name == "web_search":
                 r = web_search_action(parameters=args, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "file_processor":
                 if not args.get("file_path") and self.ui.current_file:
                     args["file_path"] = self.ui.current_file
                 r = file_processor(parameters=args, player=self.ui, speak=self.speak)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "computer_control":
                 r = computer_control(parameters=args, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "game_updater":
                 r = game_updater(parameters=args, player=self.ui, speak=self.speak)
-                result = r or "Done."
+                return r or "Done."
 
             elif name == "flight_finder":
                 r = flight_finder(parameters=args, player=self.ui)
-                result = r or "Done."
+                return r or "Done."
 
-            elif name == "shutdown_jarvis":
-                self.ui.write_log("SYS: Shutdown requested.")
+            # New tools
+            elif name == "clipboard":
+                from actions.clipboard_tool import clipboard_tool
+                r = clipboard_tool(parameters=args, player=self.ui)
+                return r or "Done."
 
-                def _shutdown():
-                    import time, os
-                    self.speak("Goodbye.")
-                    time.sleep(2.5)
-                    os._exit(0)
+            elif name == "notify":
+                from actions.notify_tool import notify_tool
+                r = notify_tool(parameters=args, player=self.ui)
+                return r or "Done."
 
-                threading.Thread(target=_shutdown, daemon=True).start()
-                return "Shutting down."
+            elif name == "app_installer":
+                from actions.app_installer import app_installer
+                r = app_installer(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
 
-            else:
-                result = f"Unknown tool: {name}"
+            elif name == "calendar":
+                from actions.calendar_tool import calendar_tool
+                r = calendar_tool(parameters=args, player=self.ui)
+                return r or "Done."
+
+            elif name == "visual_web":
+                from actions.visual_web import visual_web
+                r = visual_web(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
+            elif name == "smart_home":
+                from actions.kasa_tool import kasa_tool
+                r = kasa_tool(parameters=args, player=self.ui)
+                return r or "Done."
+
+            return f"Unknown tool: {name}"
+
+        # shutdown_jarvis bypasses timeout — must run in main thread context
+        if name == "shutdown_jarvis":
+            self.ui.write_log("SYS: Shutdown requested.")
+
+            def _shutdown():
+                import time as _t, os as _os
+                self.speak("Goodbye.")
+                _t.sleep(2.5)
+                _os._exit(0)
+
+            threading.Thread(target=_shutdown, daemon=True).start()
+            return "Shutting down."
+
+        result = "Done."
+        try:
+            with ThreadPoolExecutor(max_workers=1) as _ex:
+                _fut = _ex.submit(_dispatch)
+                try:
+                    result = _fut.result(timeout=_tool_timeout)
+                except FuturesTimeout:
+                    _fut.cancel()
+                    msg = f"Tool '{name}' timed out after {_tool_timeout}s, sir."
+                    self.speak(msg)
+                    result = msg
 
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
@@ -1369,6 +1451,16 @@ class JarvisLocal:
             # ── Wait ONLY for STT + LLM (fast) ────────────────────────────
             _warmup_done.wait(timeout=60)
             _stt_done.wait(timeout=60)
+
+            # ── Face authentication (optional) ────────────────────────────
+            if self._config.get("face_auth_enabled", False):
+                from core.face_auth import FaceAuth
+                auth = FaceAuth()
+                ok = auth.start_session(speak=self.speak)
+                if not ok:
+                    self.ui.write_log("ERR: Face auth failed — shutting down.")
+                    import os as _os; _os._exit(1)
+                self.ui.write_log("SYS: Face auth passed.")
 
             # ── Go online immediately ──────────────────────────────────────
             self.ui.write_log("SYS: JARVIS online.")

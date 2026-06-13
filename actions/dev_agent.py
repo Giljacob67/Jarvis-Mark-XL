@@ -2,6 +2,7 @@ import subprocess
 import sys
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -216,10 +217,12 @@ def _open_vscode(project_dir: Path) -> bool:
         r"C:\Program Files\Microsoft VS Code\bin\code.cmd",
     ]
     for cmd in vscode_candidates:
+        resolved = shutil.which(cmd) or (cmd if Path(cmd).exists() else None)
+        if not resolved:
+            continue
         try:
             subprocess.Popen(
-                [cmd, str(project_dir)],
-                shell=True,
+                [resolved, str(project_dir)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )

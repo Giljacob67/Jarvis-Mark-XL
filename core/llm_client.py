@@ -45,10 +45,20 @@ BASE_DIR    = get_base_dir()
 CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 _DEFAULTS = {
-    "llm_url":      "http://localhost:11434",
-    "llm_model":    "llama3.2",
-    "llm_provider": "ollama",   # "ollama" | "openai"
+    "llm_url":             "http://localhost:11434",
+    "llm_model":           "llama3.2",
+    "llm_provider":        "ollama",   # "ollama" | "openai"
+    "llm_fallback_model":  "",         # e.g. "llama3.2" — used if primary fails
 }
+
+
+def _get_fallback_model() -> str:
+    return _load_config().get("llm_fallback_model", "").strip()
+
+
+def _is_model_not_found(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(k in msg for k in ("not found", "pull the model", "model", "404", "doesn't exist"))
 
 
 def get_llm_provider() -> str:
@@ -449,6 +459,16 @@ def call_llm_text(
             "Make sure Ollama is installed and run: ollama serve"
         )
     except Exception as e:
+        fb = _get_fallback_model()
+        if fb and fb != m and _is_model_not_found(e):
+            print(f"[LLM] Primary model '{m}' not found — retrying with fallback '{fb}'")
+            payload["model"] = fb
+            try:
+                resp = requests.post(endpoint, json=payload, timeout=timeout)
+                resp.raise_for_status()
+                return (resp.json().get("message", {}).get("content") or "").strip()
+            except Exception as fe:
+                raise RuntimeError(f"LLM fallback also failed: {fe}")
         raise RuntimeError(f"LLM text call failed: {e}")
 
 

@@ -79,11 +79,11 @@ def _normalize(raw: str) -> str:
 
 def _launch_windows(app_name: str) -> bool:
 
-    if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
+    resolved = shutil.which(app_name) or shutil.which(app_name.split(".")[0])
+    if resolved:
         try:
             subprocess.Popen(
-                app_name,
-                shell=True,
+                [resolved],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -94,7 +94,12 @@ def _launch_windows(app_name: str) -> bool:
 
     if ":" in app_name:
         try:
-            subprocess.Popen(f"start {app_name}", shell=True)
+            # cmd /c start with list — no shell injection risk
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", app_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             time.sleep(1.0)
             return True
         except Exception:

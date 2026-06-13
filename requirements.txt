@@ -52,3 +52,9 @@ edge-tts              # EdgeTTS  (default, free, requires internet)
 # ── Local LLM ─────────────────────────────────────────────────────────────
 # Ollama must be installed separately: https://ollama.com
 # Then pull a model:  ollama pull qwen2.5:7b
+
+# ── New features (optional — installed on first use) ──────────────────────
+# python-kasa           # Smart home TP-Link Kasa (smart_home tool)
+# mediapipe             # Face authentication (face_auth_enabled=true in config)
+# langdetect            # Lightweight language detection (replaces LLM call)
+# opencv-python         # Already included above — used by face auth too
