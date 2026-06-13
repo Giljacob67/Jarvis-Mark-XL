@@ -966,8 +966,14 @@ class JarvisLocal:
                 priority = priority_map.get(
                     args.get("priority", "normal").lower(), TaskPriority.NORMAL
                 )
+                def _on_step(step_num: int, tool: str, desc: str) -> None:
+                    self.ui.write_log(f"SYS: ⚙ step {step_num} — {tool}: {desc[:60]}")
+
                 task_id = get_queue().submit(
-                    goal=args.get("goal", ""), priority=priority, speak=self.speak
+                    goal=args.get("goal", ""),
+                    priority=priority,
+                    speak=self.speak,
+                    on_step_start=_on_step,
                 )
                 return f"Task started (ID: {task_id})."
 
