@@ -5,8 +5,10 @@ Replaces google.generativeai with local Ollama via core.llm_client.
 import json
 import re
 
-from core.paths import BASE_DIR
 from core.llm_client import call_llm_text
+from core.logger import get_logger
+
+log = get_logger("planner")
 
 
 PLANNER_PROMPT = """You are the planning module of MARK XL, a personal AI assistant.
@@ -137,25 +139,25 @@ def create_plan(goal: str, context: str = "") -> dict:
 
         for step in plan["steps"]:
             if step.get("tool") == "generated_code":
-                print(f"[Planner] ⚠️ generated_code in step {step.get('step')} — replacing with web_search")
+                log.warning("generated_code in step %s — replacing with web_search", step.get("step"))
                 step["tool"]       = "web_search"
                 step["parameters"] = {"query": step.get("description", goal)[:200]}
 
-        print(f"[Planner] ✅ Plan: {len(plan['steps'])} steps")
+        log.info("Plan: %d steps", len(plan["steps"]))
         for s in plan["steps"]:
-            print(f"  Step {s['step']}: [{s['tool']}] {s['description']}")
+            log.debug("  Step %s: [%s] %s", s["step"], s["tool"], s["description"])
         return plan
 
     except json.JSONDecodeError as e:
-        print(f"[Planner] ⚠️ JSON parse failed: {e}")
+        log.warning("JSON parse failed: %s", e)
         return _fallback_plan(goal)
     except Exception as e:
-        print(f"[Planner] ⚠️ Planning failed: {e}")
+        log.warning("Planning failed: %s", e)
         return _fallback_plan(goal)
 
 
 def _fallback_plan(goal: str) -> dict:
-    print("[Planner] 🔄 Fallback plan")
+    log.info("Fallback plan")
     return {
         "goal":  goal,
         "steps": [
@@ -194,8 +196,8 @@ Create a REVISED plan for the remaining work only. Do not repeat completed steps
                 step["tool"]       = "web_search"
                 step["parameters"] = {"query": step.get("description", goal)[:200]}
 
-        print(f"[Planner] 🔄 Revised plan: {len(plan['steps'])} steps")
+        log.info("Revised plan: %d steps", len(plan.get("steps", [])))
         return plan
     except Exception as e:
-        print(f"[Planner] ⚠️ Replan failed: {e}")
+        log.warning("Replan failed: %s", e)
         return _fallback_plan(goal)

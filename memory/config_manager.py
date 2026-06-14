@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from core.paths import BASE_DIR, CONFIG_DIR
+from core.paths import CONFIG_DIR
+
 CONFIG_FILE = CONFIG_DIR / "api_keys.json"
 
 

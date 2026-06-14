@@ -29,11 +29,14 @@ import re
 import subprocess
 import sys
 import time
-from typing import Generator
+from collections.abc import Generator
 
 import requests
 
-from core.paths import BASE_DIR, API_CONFIG_PATH as CONFIG_PATH
+from core.logger import get_logger
+from core.paths import API_CONFIG_PATH as CONFIG_PATH
+
+log = get_logger("llm")
 
 _SENT_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)\s*\n')
 
@@ -104,10 +107,10 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
         try:
             ok = requests.get(health, headers=headers, timeout=5).status_code == 200
             label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
-            print(f"[LLM] {label} {'reachable' if ok else 'returned non-200'} at {url}")
+            log.info("%s %s at %s", label, "reachable" if ok else "returned non-200", url)
             return ok
         except Exception as e:
-            print(f"[LLM] Cannot reach {label} at {url}. Error: {e}")
+            log.warning("Cannot reach %s at %s: %s", label, url, e)
             return False
 
     # Native Ollama
@@ -122,27 +125,27 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
     if _is_up():
         return True
 
-    print("[LLM] Ollama not running — launching 'ollama serve'…")
+    log.info("Ollama not running — launching 'ollama serve'")
     try:
         kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         subprocess.Popen(["ollama", "serve"], **kwargs)
     except FileNotFoundError:
-        print("[LLM] 'ollama' command not found. Install Ollama from https://ollama.com")
+        log.error("'ollama' command not found. Install from https://ollama.com")
         return False
     except Exception as e:
-        print(f"[LLM] Could not launch Ollama: {e}")
+        log.error("Could not launch Ollama: %s", e)
         return False
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(1.0)
         if _is_up():
-            print("[LLM] Ollama started successfully.")
+            log.info("Ollama started successfully.")
             return True
 
-    print("[LLM] Ollama did not respond within the timeout.")
+    log.error("Ollama did not respond within the timeout.")
     return False
 
 
@@ -155,7 +158,7 @@ def warmup_model(system_prompt: str | None = None) -> bool:
     """
     url, model = get_llm_settings()
     provider   = get_llm_provider()
-    print(f"[LLM] Warming up '{model}' ({provider})…")
+    log.info("Warming up '%s' (%s)", model, provider)
 
     messages: list[dict] = []
     if system_prompt:
@@ -171,10 +174,10 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         try:
             resp = requests.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
-            print(f"[LLM] '{model}' ready.")
+            log.info("'%s' ready.", model)
             return True
         except Exception as e:
-            print(f"[LLM] Warmup failed (non-fatal): {e}")
+            log.warning("Warmup failed (non-fatal): %s", e)
             return False
 
     # Native Ollama — include keep_alive + GPU hint for cache priming
@@ -186,7 +189,7 @@ def warmup_model(system_prompt: str | None = None) -> bool:
     try:
         resp = requests.post(f"{url}/api/chat", json=payload, timeout=180)
         resp.raise_for_status()
-        print(f"[LLM] '{model}' loaded and KV cache primed.")
+        log.info("'%s' loaded and KV cache primed.", model)
         return True
     except Exception as e:
         print(f"[LLM] Warmup failed (non-fatal): {e}")
@@ -268,7 +271,7 @@ def call_llm(
             resp.raise_for_status()
             return _parse_openai_response(resp.json())
         except Exception as e:
-            raise RuntimeError(f"OpenAI-compatible LLM call failed: {e}")
+            raise RuntimeError(f"OpenAI-compatible LLM call failed: {e}") from e
 
     # Native Ollama
     payload = {
@@ -284,7 +287,7 @@ def call_llm(
         resp.raise_for_status()
         return _parse_ollama_response(resp.json())
     except requests.exceptions.ConnectionError as e:
-        print(f"[LLM] ConnectionError — trying to restart Ollama… ({e})")
+        log.warning("ConnectionError — trying to restart Ollama: %s", e)
         if ensure_ollama_running():
             try:
                 resp = requests.post(endpoint, json=payload, timeout=timeout)
@@ -295,15 +298,15 @@ def call_llm(
         raise RuntimeError(
             f"Cannot connect to Ollama at {url}. "
             "Make sure Ollama is installed and run: ollama serve"
-        )
+        ) from None
     except requests.exceptions.Timeout:
-        raise RuntimeError("Ollama request timed out after 120 s.")
+        raise RuntimeError("Ollama request timed out after 120 s.") from None
     except requests.exceptions.HTTPError as e:
-        print(f"[LLM] HTTPError: {e.response.status_code} — {e.response.text[:200]}")
-        raise RuntimeError(f"Ollama HTTP error: {e.response.status_code}")
+        log.error("HTTPError: %s — %s", e.response.status_code, e.response.text[:200])
+        raise RuntimeError(f"Ollama HTTP error: {e.response.status_code}") from e
     except Exception as e:
-        print(f"[LLM] Unexpected error: {type(e).__name__}: {e}")
-        raise RuntimeError(f"LLM call failed: {e}")
+        log.error("Unexpected error: %s: %s", type(e).__name__, e)
+        raise RuntimeError(f"LLM call failed: {e}") from e
 
 
 def call_llm_text(
@@ -331,7 +334,7 @@ def call_llm_text(
             resp.raise_for_status()
             return _parse_openai_response(resp.json())["content"]
         except Exception as e:
-            raise RuntimeError(f"OpenAI-compatible text call failed: {e}")
+            raise RuntimeError(f"OpenAI-compatible text call failed: {e}") from e
 
     # Native Ollama
     endpoint = f"{url}/api/chat"
@@ -356,15 +359,15 @@ def call_llm_text(
     except Exception as e:
         fb = _get_fallback_model()
         if fb and fb != m and _is_model_not_found(e):
-            print(f"[LLM] Primary model '{m}' not found — retrying with fallback '{fb}'")
+            log.warning("Primary model '%s' not found — retrying with fallback '%s'", m, fb)
             payload["model"] = fb
             try:
                 resp = requests.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
                 return _parse_ollama_response(resp.json())["content"]
             except Exception as fe:
-                raise RuntimeError(f"LLM fallback also failed: {fe}")
-        raise RuntimeError(f"LLM text call failed: {e}")
+                raise RuntimeError(f"LLM fallback also failed: {fe}") from fe
+        raise RuntimeError(f"LLM text call failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +550,7 @@ def call_llm_stream(
     try:
         yield from _do_native_stream()
     except requests.exceptions.ConnectionError as e:
-        print(f"[LLM] Stream ConnectionError — trying to restart Ollama… ({e})")
+        log.warning("Stream ConnectionError — trying to restart Ollama: %s", e)
         if ensure_ollama_running():
             yield from _do_native_stream()
             return
@@ -560,5 +563,5 @@ def call_llm_stream(
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Ollama HTTP error: {e.response.status_code}")
     except Exception as e:
-        print(f"[LLM] Stream error: {type(e).__name__}: {e}")
+        log.error("Stream error: %s: %s", type(e).__name__, e)
         raise RuntimeError(f"LLM stream failed: {e}")

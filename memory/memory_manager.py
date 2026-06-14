@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, date
+from datetime import date, datetime
 from threading import Lock
-from pathlib import Path
 
+from core.logger import get_logger
 from core.paths import BASE_DIR
+
+log = get_logger("memory")
 
 MEMORY_PATH = BASE_DIR / "memory" / "long_term.json"
 _lock            = Lock()
@@ -49,7 +51,7 @@ def load_memory() -> dict:
                 return data
             return _empty_memory()
         except Exception as e:
-            print(f"[Memory] ⚠️ Load error: {e}")
+            log.warning("Load error: %s", e)
             return _empty_memory()
 
 def _all_entries(memory: dict) -> list[tuple]:
@@ -88,7 +90,7 @@ def _trim_to_limit(memory: dict) -> dict:
         if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
             break
         del memory[cat][key]
-        print(f"[Memory] 🗑️  Trimmed {cat}/{key}")
+        log.info("Trimmed %s/%s", cat, key)
     return memory
 
 def _rotate_backups() -> None:
@@ -99,7 +101,7 @@ def _rotate_backups() -> None:
         try:
             shutil.copy2(MEMORY_PATH, backup)
         except Exception as e:
-            print(f"[Memory] ⚠️ Backup failed: {e}")
+            log.warning("Backup failed: %s", e)
     # prune old backups
     backups = sorted(MEMORY_PATH.parent.glob("long_term_*.json"))
     for old in backups[:-MEMORY_BACKUP_MAX]:
@@ -157,7 +159,7 @@ def update_memory(memory_update: dict) -> dict:
     memory = load_memory()
     if _recursive_update(memory, memory_update):
         save_memory(memory)
-        print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
+        log.info("Saved: %s", list(memory_update.keys()))
     return memory
 
 def format_memory_for_prompt(memory: dict | None) -> str:

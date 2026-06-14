@@ -6,8 +6,10 @@ import json
 import re
 from enum import Enum
 
-from core.paths import BASE_DIR
 from core.llm_client import call_llm_text
+from core.logger import get_logger
+
+log = get_logger("error_handler")
 
 
 class ErrorDecision(Enum):
@@ -45,7 +47,7 @@ def analyze_error(
     max_attempts: int = 2,
 ) -> dict:
     if attempt >= max_attempts:
-        print(f"[ErrorHandler] ⚠️ Max attempts for step {step.get('step')} — forcing replan")
+        log.warning("Max attempts for step %s — forcing replan", step.get("step"))
         return {
             "decision":       ErrorDecision.REPLAN,
             "reason":         f"Failed {attempt} times: {error[:100]}",
@@ -83,11 +85,11 @@ Attempt number: {attempt}"""
             result["decision"]     = ErrorDecision.REPLAN
             result["user_message"] = "This step is critical — finding alternative approach, sir."
 
-        print(f"[ErrorHandler] Decision: {result['decision'].value} — {result.get('reason', '')}")
+        log.info("Decision: %s — %s", result["decision"].value, result.get("reason", ""))
         return result
 
     except Exception as e:
-        print(f"[ErrorHandler] ⚠️ Analysis failed: {e} — defaulting to replan")
+        log.warning("Analysis failed: %s — defaulting to replan", e)
         return {
             "decision":       ErrorDecision.REPLAN,
             "reason":         str(e),
@@ -128,7 +130,7 @@ Return ONLY the Python code, no explanation."""
             "critical":   step.get("critical", False),
         }
     except Exception as e:
-        print(f"[ErrorHandler] ⚠️ Fix generation failed: {e}")
+        log.warning("Fix generation failed: %s", e)
         return {
             "step":        step.get("step"),
             "tool":        "generated_code",

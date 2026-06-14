@@ -2,10 +2,15 @@ import json
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any
+
+from core.logger import get_logger
+
+log = get_logger("task_queue")
 
 _RESULTS_LOG = Path.home() / ".jarvis" / "task_results.jsonl"
 
@@ -21,12 +26,12 @@ class TaskStatus(Enum):
 class TaskPriority(Enum):
     LOW    = 3
     NORMAL = 2
-    HIGH   = 1   
+    HIGH   = 1
 
 
 @dataclass(order=True)
 class Task:
-    priority:    int                       
+    priority:    int
     created_at:  float = field(compare=False)
     task_id:     str   = field(compare=False)
     goal:        str   = field(compare=False)
@@ -44,12 +49,12 @@ class TaskQueue:
         self._queue:        list[Task]       = []
         self._lock:         threading.Lock   = threading.Lock()
         self._condition:    threading.Condition = threading.Condition(self._lock)
-        self._tasks:        dict[str, Task]  = {} 
+        self._tasks:        dict[str, Task]  = {}
         self._running:      bool             = False
         self._worker_thread: threading.Thread | None = None
         self._max_concurrent = max_concurrent
         self._active_count   = 0
-        self._executor       = None  
+        self._executor       = None
 
     def _get_executor(self):
         if self._executor is None:
@@ -67,13 +72,13 @@ class TaskQueue:
             name="AgentTaskQueue"
         )
         self._worker_thread.start()
-        print("[TaskQueue] ✅ Started")
+        log.info("Started")
 
     def stop(self) -> None:
         self._running = False
         with self._condition:
             self._condition.notify_all()
-        print("[TaskQueue] 🔴 Stopped")
+        log.info("Stopped")
 
     def submit(
         self,
@@ -101,7 +106,7 @@ class TaskQueue:
             self._tasks[task_id] = task
             self._condition.notify()
 
-        print(f"[TaskQueue] 📥 Task queued: [{task_id}] {goal[:60]}")
+        log.info("Task queued: [%s] %s", task_id, goal[:60])
         return task_id
 
     def cancel(self, task_id: str) -> bool:
@@ -115,7 +120,7 @@ class TaskQueue:
 
             task.cancel_flag.set()
             task.status = TaskStatus.CANCELLED
-            print(f"[TaskQueue] 🚫 Task cancelled: [{task_id}]")
+            log.info("Task cancelled: [%s]", task_id)
             return True
 
     def get_status(self, task_id: str) -> dict | None:
@@ -192,10 +197,10 @@ class TaskQueue:
             with _RESULTS_LOG.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
-            print(f"[TaskQueue] ⚠️ Could not persist result: {e}")
+            log.warning("Could not persist result: %s", e)
 
     def _run_task(self, task: Task) -> None:
-        print(f"[TaskQueue] ▶️ Running: [{task.task_id}] {task.goal[:60]}")
+        log.info("Running: [%s] %s", task.task_id, task.goal[:60])
         try:
             executor = self._get_executor()
             result   = executor.execute(
@@ -219,9 +224,9 @@ class TaskQueue:
                 try:
                     task.on_complete(task.task_id, result)
                 except Exception as e:
-                    print(f"[TaskQueue] ⚠️ on_complete callback error: {e}")
+                    log.warning("on_complete callback error: %s", e)
 
-            print(f"[TaskQueue] ✅ Completed: [{task.task_id}]")
+            log.info("Completed: [%s]", task.task_id)
 
         except Exception as e:
             with self._lock:
@@ -229,7 +234,7 @@ class TaskQueue:
                 task.error  = str(e)
                 self._active_count -= 1
             self._persist_result(task)
-            print(f"[TaskQueue] ❌ Failed: [{task.task_id}] {e}")
+            log.error("Failed: [%s] %s", task.task_id, e)
 
         with self._condition:
             self._condition.notify()

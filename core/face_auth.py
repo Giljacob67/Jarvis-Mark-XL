@@ -14,7 +14,6 @@ import sys
 import time
 from pathlib import Path
 
-
 _PROFILE_PATH = Path.home() / ".jarvis" / "face_profile.json"
 _DEFAULT_THRESHOLD = 0.15   # cosine distance — lower = stricter
 
@@ -69,7 +68,7 @@ class FaceAuth:
             "https://storage.googleapis.com/mediapipe-models/"
             "face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
         )
-        print(f"[FaceAuth] Downloading face landmarker model…")
+        print("[FaceAuth] Downloading face landmarker model…")
         urllib.request.urlretrieve(url, dest)
         print(f"[FaceAuth] Model saved to {dest}")
 
@@ -79,7 +78,6 @@ class FaceAuth:
         try:
             import cv2
             import mediapipe as mp
-            from mediapipe.tasks import python as mp_python
             from mediapipe.tasks.python import vision as mp_vision
 
             cap = cv2.VideoCapture(0)
