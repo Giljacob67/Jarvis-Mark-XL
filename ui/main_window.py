@@ -284,57 +284,60 @@ class HudCanvas(QWidget):
             self._face_px = None
 
     def _step(self):
-        self._tick += 1
-        now = time.time()
-        if now - self._last_t > (0.12 if self.speaking else 0.5):
-            if self.speaking:
-                self._tgt_scale = random.uniform(1.06, 1.14)
-                self._tgt_halo  = random.uniform(145, 190)
-            elif self.muted:
-                self._tgt_scale = random.uniform(0.998, 1.002)
-                self._tgt_halo  = random.uniform(15, 28)
-            else:
-                self._tgt_scale = random.uniform(1.001, 1.008)
-                self._tgt_halo  = random.uniform(48, 68)
-            self._last_t = now
+        try:
+            self._tick += 1
+            now = time.time()
+            if now - self._last_t > (0.12 if self.speaking else 0.5):
+                if self.speaking:
+                    self._tgt_scale = random.uniform(1.06, 1.14)
+                    self._tgt_halo  = random.uniform(145, 190)
+                elif self.muted:
+                    self._tgt_scale = random.uniform(0.998, 1.002)
+                    self._tgt_halo  = random.uniform(15, 28)
+                else:
+                    self._tgt_scale = random.uniform(1.001, 1.008)
+                    self._tgt_halo  = random.uniform(48, 68)
+                self._last_t = now
 
-        sp = 0.38 if self.speaking else 0.15
-        self._scale += (self._tgt_scale - self._scale) * sp
-        self._halo  += (self._tgt_halo  - self._halo)  * sp
+            sp = 0.38 if self.speaking else 0.15
+            self._scale += (self._tgt_scale - self._scale) * sp
+            self._halo  += (self._tgt_halo  - self._halo)  * sp
 
-        speeds = [1.3, -0.9, 2.0] if self.speaking else [0.55, -0.35, 0.9]
-        for i, spd in enumerate(speeds):
-            self._rings[i] = (self._rings[i] + spd) % 360
+            speeds = [1.3, -0.9, 2.0] if self.speaking else [0.55, -0.35, 0.9]
+            for i, spd in enumerate(speeds):
+                self._rings[i] = (self._rings[i] + spd) % 360
 
-        self._scan  = (self._scan  + (3.0 if self.speaking else 1.3)) % 360
-        self._scan2 = (self._scan2 + (-2.0 if self.speaking else -0.75)) % 360
+            self._scan  = (self._scan  + (3.0 if self.speaking else 1.3)) % 360
+            self._scan2 = (self._scan2 + (-2.0 if self.speaking else -0.75)) % 360
 
-        fw  = min(self.width(), self.height())
-        lim = fw * 0.74
-        spd = 4.2 if self.speaking else 2.0
-        self._pulses = [r + spd for r in self._pulses if r + spd < lim]
-        if len(self._pulses) < 3 and random.random() < (0.07 if self.speaking else 0.025):
-            self._pulses.append(0.0)
+            fw  = min(self.width(), self.height())
+            lim = fw * 0.74
+            spd = 4.2 if self.speaking else 2.0
+            self._pulses = [r + spd for r in self._pulses if r + spd < lim]
+            if len(self._pulses) < 3 and random.random() < (0.07 if self.speaking else 0.025):
+                self._pulses.append(0.0)
 
-        if self.speaking and random.random() < 0.28:
-            cx, cy = self.width() / 2, self.height() / 2
-            ang = random.uniform(0, 2 * math.pi)
-            r_s = fw * 0.28
-            self._particles.append([
-                cx + math.cos(ang) * r_s, cy + math.sin(ang) * r_s,
-                math.cos(ang) * random.uniform(0.9, 2.4),
-                math.sin(ang) * random.uniform(0.9, 2.4) - 0.4, 1.0,
-            ])
-        self._particles = [
-            [p[0]+p[2], p[1]+p[3], p[2]*0.97, p[3]*0.97, p[4]-0.028]
-            for p in self._particles if p[4] > 0
-        ]
+            if self.speaking and random.random() < 0.28:
+                cx, cy = self.width() / 2, self.height() / 2
+                ang = random.uniform(0, 2 * math.pi)
+                r_s = fw * 0.28
+                self._particles.append([
+                    cx + math.cos(ang) * r_s, cy + math.sin(ang) * r_s,
+                    math.cos(ang) * random.uniform(0.9, 2.4),
+                    math.sin(ang) * random.uniform(0.9, 2.4) - 0.4, 1.0,
+                ])
+            self._particles = [
+                [p[0]+p[2], p[1]+p[3], p[2]*0.97, p[3]*0.97, p[4]-0.028]
+                for p in self._particles if p[4] > 0
+            ]
 
-        self._blink_tick += 1
-        if self._blink_tick >= 38:
-            self._blink = not self._blink
-            self._blink_tick = 0
-        self.update()
+            self._blink_tick += 1
+            if self._blink_tick >= 38:
+                self._blink = not self._blink
+                self._blink_tick = 0
+            self.update()
+        except Exception:
+            pass
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -592,46 +595,53 @@ class LogWidget(QTextEdit):
             self._next()
 
     def _next(self):
-        if not self._queue:
+        try:
+            if not self._queue:
+                self._typing = False
+                return
+            self._typing = True
+            self._text   = self._queue.pop(0)
+            self._pos    = 0
+            tl = self._text.lower()
+            if   tl.startswith("you:"):    self._tag = "you"
+            elif tl.startswith("jarvis:"): self._tag = "ai"
+            elif tl.startswith("file:"):   self._tag = "file"
+            elif "err" in tl:              self._tag = "err"
+            else:                          self._tag = "sys"
+            self._tmr.start(6)
+        except Exception:
             self._typing = False
-            return
-        self._typing = True
-        self._text   = self._queue.pop(0)
-        self._pos    = 0
-        tl = self._text.lower()
-        if   tl.startswith("you:"):    self._tag = "you"
-        elif tl.startswith("jarvis:"): self._tag = "ai"
-        elif tl.startswith("file:"):   self._tag = "file"
-        elif "err" in tl:              self._tag = "err"
-        else:                          self._tag = "sys"
-        self._tmr.start(6)
 
     def _step(self):
-        if self._pos < len(self._text):
-            ch  = self._text[self._pos]
-            cur = self.textCursor()
-            fmt = cur.charFormat()
-            col = {
-                "you":  qcol(C.WHITE),
-                "ai":   qcol(C.PRI),
-                "err":  qcol(C.RED),
-                "file": qcol(C.GREEN),
-                "sys":  qcol(C.ACC2),
-            }.get(self._tag, qcol(C.TEXT))
-            fmt.setForeground(QBrush(col))
-            cur.movePosition(cur.MoveOperation.End)
-            cur.insertText(ch, fmt)
-            self.setTextCursor(cur)
-            self.ensureCursorVisible()
-            self._pos += 1
-        else:
+        try:
+            if self._pos < len(self._text):
+                ch  = self._text[self._pos]
+                cur = self.textCursor()
+                fmt = cur.charFormat()
+                col = {
+                    "you":  qcol(C.WHITE),
+                    "ai":   qcol(C.PRI),
+                    "err":  qcol(C.RED),
+                    "file": qcol(C.GREEN),
+                    "sys":  qcol(C.ACC2),
+                }.get(self._tag, qcol(C.TEXT))
+                fmt.setForeground(QBrush(col))
+                cur.movePosition(cur.MoveOperation.End)
+                cur.insertText(ch, fmt)
+                self.setTextCursor(cur)
+                self.ensureCursorVisible()
+                self._pos += 1
+            else:
+                self._tmr.stop()
+                cur = self.textCursor()
+                cur.movePosition(cur.MoveOperation.End)
+                cur.insertText("\n")
+                self.setTextCursor(cur)
+                self.ensureCursorVisible()
+                QTimer.singleShot(20, self._next)
+        except Exception:
             self._tmr.stop()
-            cur = self.textCursor()
-            cur.movePosition(cur.MoveOperation.End)
-            cur.insertText("\n")
-            self.setTextCursor(cur)
-            self.ensureCursorVisible()
-            QTimer.singleShot(20, self._next)
+            self._typing = False
 
 
 class HistoryWidget(QTextEdit):
