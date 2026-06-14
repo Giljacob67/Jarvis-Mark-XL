@@ -6,14 +6,8 @@ import shutil
 import time
 from pathlib import Path
 
+from core.paths import BASE_DIR
 
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR         = get_base_dir()
 PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
 MAX_FIX_ATTEMPTS = 5
 

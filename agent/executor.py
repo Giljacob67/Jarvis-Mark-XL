@@ -9,22 +9,13 @@ import re
 import sys
 import threading
 import subprocess
-import os
 from pathlib import Path
 from typing import Callable
 
+from core.paths import BASE_DIR
 from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
 from core.llm_client     import call_llm_text
-
-
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR = get_base_dir()
 
 
 # ---------------------------------------------------------------------------

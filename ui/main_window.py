@@ -13,6 +13,8 @@ from pathlib import Path
 
 import psutil
 
+from core.paths import BASE_DIR, CONFIG_DIR, API_CONFIG_PATH as API_FILE
+
 from PyQt6.QtCore import (
     QEasingCurve, QMimeData, QObject, QPointF, QRectF, QSize, Qt,
     QTimer, QUrl, pyqtSignal,
@@ -27,15 +29,6 @@ from PyQt6.QtWidgets import (
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget,
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QProgressBar,
 )
-
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
-
-BASE_DIR   = _base_dir()
-CONFIG_DIR = BASE_DIR / "config"
-API_FILE   = CONFIG_DIR / "api_keys.json"
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
 _MIN_W,     _MIN_H     = 820, 580
@@ -2208,8 +2201,29 @@ class _RootShim:
         pass
 
 
+def _macos_foreground_app() -> None:
+    """Promote a launchd-launched .app to a foreground GUI process.
+
+    Gives the process a Dock icon and key-window focus when launched from a
+    bundle. TransformProcessType is the only step needed; we must NOT pre-init
+    NSApplication.sharedApplication() here because Qt's Cocoa plugin expects to
+    be the first caller so it can install QCocoaApplication.
+    """
+    if platform.system() != "Darwin":
+        return
+    try:
+        import ctypes
+        carbon = ctypes.CDLL("/System/Library/Frameworks/Carbon.framework/Carbon")
+        # kCurrentProcess = {0, 2}; kProcessTransformToForegroundApplication = 1
+        psn = (ctypes.c_uint32 * 2)(0, 2)
+        carbon.TransformProcessType(psn, ctypes.c_uint32(1))
+    except Exception:
+        pass
+
+
 class JarvisUI:
     def __init__(self, face_path: str, size=None):
+        _macos_foreground_app()
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
         self._win = MainWindow(face_path)

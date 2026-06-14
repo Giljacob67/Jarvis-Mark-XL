@@ -21,35 +21,57 @@ Supports three backends — selected via  "llm_provider"  in config/api_keys.jso
         Note: tool-calling support depends on the model; use a model that
         supports function/tool calls (e.g. Qwen2.5, Llama-3.1, Mistral).
 """
+from __future__ import annotations
+
 import json
+import os
 import re
 import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import Generator
 
 import requests
 
-# Matches a sentence boundary: [.!?] followed by whitespace, or a blank line.
-# Avoids splitting on decimals (3.5) because those have no space after the dot.
+from core.paths import BASE_DIR, API_CONFIG_PATH as CONFIG_PATH
+
 _SENT_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)\s*\n')
-
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR    = get_base_dir()
-CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 _DEFAULTS = {
     "llm_url":             "http://localhost:11434",
     "llm_model":           "llama3.2",
-    "llm_provider":        "ollama",   # "ollama" | "openai"
-    "llm_fallback_model":  "",         # e.g. "llama3.2" — used if primary fails
+    "llm_provider":        "ollama",
+    "llm_fallback_model":  "",
 }
+
+
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+def _load_config() -> dict:
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def get_llm_settings() -> tuple[str, str]:
+    """Returns (base_url, model_name)."""
+    cfg   = _load_config()
+    url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
+    model = cfg.get("llm_model", _DEFAULTS["llm_model"])
+    return url, model
+
+
+def get_llm_provider() -> str:
+    """Returns 'ollama', 'ollama_cloud', or 'openai'."""
+    raw = _load_config().get("llm_provider", "ollama").strip().lower()
+    if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp"):
+        return "openai"
+    if raw in ("ollama_cloud", "ollamacloud"):
+        return "ollama_cloud"
+    return "ollama"
 
 
 def _get_fallback_model() -> str:
@@ -61,87 +83,34 @@ def _is_model_not_found(exc: Exception) -> bool:
     return any(k in msg for k in ("not found", "pull the model", "model", "404", "doesn't exist"))
 
 
-def get_llm_provider() -> str:
-    """Returns 'ollama', 'ollama_cloud', or 'openai' (covers LM Studio, LocalAI, Jan, etc.)."""
-    raw = _load_config().get("llm_provider", "ollama").strip().lower()
-    if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp"):
-        return "openai"
-    elif raw in ("ollama_cloud", "ollamacloud"):
-        return "ollama_cloud"
-    return "ollama"
-
-
-def _is_ollama_cloud() -> bool:
-    """Check if configured to use Ollama Cloud API."""
-    return get_llm_provider() == "ollama_cloud"
-
-
 def _get_auth_headers() -> dict:
-    """Get authentication headers for Ollama Cloud API."""
-    cfg = _load_config()
-    api_key = cfg.get("ollama_api_key", "")
-    
-    # Also check environment variable
-    if not api_key:
-        import os
-        api_key = os.environ.get("OLLAMA_API_KEY", "")
-    
-    if api_key:
-        return {"Authorization": f"Bearer {api_key}"}
-    return {}
+    """Bearer token for Ollama Cloud API."""
+    api_key = _load_config().get("ollama_api_key", "") or os.environ.get("OLLAMA_API_KEY", "")
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
-def _load_config() -> dict:
-    try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
+# ---------------------------------------------------------------------------
+# Ollama lifecycle
+# ---------------------------------------------------------------------------
 
 def ensure_ollama_running(timeout: int = 15) -> bool:
-    """
-    For Ollama: ping /api/tags; auto-launch 'ollama serve' if not running.
-    For Ollama Cloud: ping /v1/models with auth header.
-    For OpenAI-compatible providers: just ping /v1/models (server must be started manually).
-    Returns True if the LLM server is reachable.
-    """
+    """Ping or auto-launch Ollama.  Returns True if reachable."""
     url, _   = get_llm_settings()
     provider = get_llm_provider()
 
-    if provider == "ollama_cloud":
-        # Ollama Cloud API — requires auth
+    if provider in ("ollama_cloud", "openai"):
         health = f"{url}/v1/models"
-        headers = _get_auth_headers()
+        headers = _get_auth_headers() if provider == "ollama_cloud" else {}
         try:
             ok = requests.get(health, headers=headers, timeout=5).status_code == 200
-            if ok:
-                print(f"[LLM] Ollama Cloud API reachable at {url}")
-            else:
-                print(f"[LLM] Ollama Cloud API at {url} returned non-200. Check API key.")
+            label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
+            print(f"[LLM] {label} {'reachable' if ok else 'returned non-200'} at {url}")
             return ok
         except Exception as e:
-            print(f"[LLM] Cannot reach Ollama Cloud API at {url}. Error: {e}")
+            print(f"[LLM] Cannot reach {label} at {url}. Error: {e}")
             return False
 
-    if provider == "openai":
-        # OpenAI-compatible servers (LM Studio, LocalAI, etc.) must be started
-        # by the user — we just check if they're reachable.
-        health = f"{url}/v1/models"
-        try:
-            ok = requests.get(health, timeout=5).status_code == 200
-            if ok:
-                print(f"[LLM] OpenAI-compatible server reachable at {url}")
-            else:
-                print(f"[LLM] Server at {url} returned non-200.  Is it running?")
-            return ok
-        except Exception as e:
-            print(
-                f"[LLM] Cannot reach OpenAI-compatible server at {url}.\n"
-                "      Make sure LM Studio / LocalAI / Jan is running and the server is started."
-            )
-            return False
-
-    # ── Ollama ──────────────────────────────────────────────────────────────
+    # Native Ollama
     health = f"{url}/api/tags"
 
     def _is_up() -> bool:
@@ -181,16 +150,8 @@ def warmup_model(system_prompt: str | None = None) -> bool:
     """
     Pre-load the model AND prime Ollama's KV prefix cache.
 
-    Why the system_prompt matters
-    ─────────────────────────────
-    Ollama caches the KV attention state of the prompt prefix across requests.
-    If warmup includes the same system prompt that real requests will use, Ollama
-    evaluates those tokens ONCE at startup.  Every subsequent request only needs
-    to evaluate the small delta (user message ± time context) instead of the full
-    300-500 token system prompt → drops first-token latency from ~17 s to <1 s.
-
-    Pass the *static* part of the system prompt (the JARVIS protocol text, without
-    timestamps or per-minute context) so the prefix stays valid across calls.
+    Pass the *static* part of the system prompt so the prefix stays valid
+    across calls → first-token <1 s after warmup.
     """
     url, model = get_llm_settings()
     provider   = get_llm_provider()
@@ -201,51 +162,26 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": "hi"})
 
-    if provider == "ollama_cloud":
-        # Ollama Cloud API — uses OpenAI-compatible endpoint with auth
-        headers = _get_auth_headers()
-        payload = {
-            "model":      model,
-            "messages":   messages,
-            "stream":     False,
-            "max_tokens": 1,
+    if provider in ("ollama_cloud", "openai"):
+        payload: dict = {
+            "model": model, "messages": messages,
+            "stream": False, "max_tokens": 1,
         }
+        headers = _get_auth_headers() if provider == "ollama_cloud" else {}
         try:
             resp = requests.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
-            print(f"[LLM] '{model}' ready (Ollama Cloud API).")
+            print(f"[LLM] '{model}' ready.")
             return True
         except Exception as e:
             print(f"[LLM] Warmup failed (non-fatal): {e}")
             return False
 
-    if provider == "openai":
-        # OpenAI-compatible: just fire a minimal request to ensure the model is loaded.
-        # No keep_alive or KV-cache priming available — server manages this internally.
-        payload = {
-            "model":      model,
-            "messages":   messages,
-            "stream":     False,
-            "max_tokens": 1,
-        }
-        try:
-            resp = requests.post(f"{url}/v1/chat/completions", json=payload, timeout=180)
-            resp.raise_for_status()
-            print(f"[LLM] '{model}' ready (OpenAI-compatible server).")
-            return True
-        except Exception as e:
-            print(f"[LLM] Warmup failed (non-fatal): {e}")
-            return False
-
-    # ── Ollama ──────────────────────────────────────────────────────────────
+    # Native Ollama — include keep_alive + GPU hint for cache priming
     payload = {
-        "model":      model,
-        "messages":   messages,
-        "stream":     False,
-        "keep_alive": -1,
-        # num_gpu:99 → push ALL transformer layers to GPU (Ollama caps at available)
-        # This is safe even without a GPU — Ollama silently ignores if n_gpu_layers=0
-        "options":    {"num_predict": 1, "num_gpu": 99},
+        "model": model, "messages": messages,
+        "stream": False, "keep_alive": -1,
+        "options": {"num_predict": 1, "num_gpu": 99},
     }
     try:
         resp = requests.post(f"{url}/api/chat", json=payload, timeout=180)
@@ -257,13 +193,52 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         return False
 
 
-def get_llm_settings() -> tuple[str, str]:
-    """Returns (base_url, model_name)."""
-    cfg   = _load_config()
-    url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
-    model = cfg.get("llm_model", _DEFAULTS["llm_model"])
-    return url, model
+# ---------------------------------------------------------------------------
+# Response parsing helpers
+# ---------------------------------------------------------------------------
 
+def _parse_openai_tool_calls(raw_tc: list) -> list[dict]:
+    """Normalise OpenAI-style tool_calls to Ollama-style format."""
+    result = []
+    for t in (raw_tc or []):
+        args = t.get("function", {}).get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                pass
+        result.append({
+            "id": t.get("id", ""),
+            "function": {
+                "name": t["function"]["name"],
+                "arguments": args,
+            },
+        })
+    return result
+
+
+def _parse_openai_response(data: dict) -> dict:
+    """Extract content + tool_calls from an OpenAI-format response body."""
+    choice = data.get("choices", [{}])[0]
+    msg    = choice.get("message", {})
+    return {
+        "content":    (msg.get("content") or "").strip(),
+        "tool_calls": _parse_openai_tool_calls(msg.get("tool_calls")),
+    }
+
+
+def _parse_ollama_response(data: dict) -> dict:
+    """Extract content + tool_calls from an Ollama native response body."""
+    msg = data.get("message", {})
+    return {
+        "content":    (msg.get("content") or "").strip(),
+        "tool_calls": msg.get("tool_calls") or [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Non-streaming chat
+# ---------------------------------------------------------------------------
 
 def call_llm(
     messages: list,
@@ -271,102 +246,35 @@ def call_llm(
     timeout:  int = 120,
 ) -> dict:
     """
-    Non-streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible backend.
+    Non-streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible.
 
-    Returns:
-        {"content": str, "tool_calls": list}
+    Returns: {"content": str, "tool_calls": list}
     """
     url, model = get_llm_settings()
     provider   = get_llm_provider()
+    endpoint   = f"{url}/v1/chat/completions" if provider != "ollama" else f"{url}/api/chat"
+    headers    = _get_auth_headers() if provider == "ollama_cloud" else {}
 
-    if provider == "ollama_cloud":
-        # Ollama Cloud API — uses OpenAI-compatible endpoint with auth
-        endpoint = f"{url}/v1/chat/completions"
-        headers = _get_auth_headers()
+    if provider in ("ollama_cloud", "openai"):
         payload: dict = {
-            "model":      model,
-            "messages":   messages,
-            "stream":     False,
-            "max_tokens": 150,
+            "model": model, "messages": messages,
+            "stream": False, "max_tokens": 150,
         }
         if tools:
-            payload["tools"]       = tools
+            payload["tools"] = tools
             payload["tool_choice"] = "auto"
         try:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
-            choice = resp.json().get("choices", [{}])[0]
-            msg    = choice.get("message", {})
-            # OpenAI tool_calls format → normalise to Ollama-style
-            raw_tc  = msg.get("tool_calls") or []
-            tc_list = [
-                {
-                    "id":       t.get("id", ""),
-                    "function": {
-                        "name":      t["function"]["name"],
-                        "arguments": (
-                            json.loads(t["function"]["arguments"])
-                            if isinstance(t["function"].get("arguments"), str)
-                            else t["function"].get("arguments", {})
-                        ),
-                    },
-                }
-                for t in raw_tc
-            ]
-            return {
-                "content":    (msg.get("content") or "").strip(),
-                "tool_calls": tc_list,
-            }
-        except Exception as e:
-            raise RuntimeError(f"Ollama Cloud API call failed: {e}")
-
-    if provider == "openai":
-        endpoint = f"{url}/v1/chat/completions"
-        payload: dict = {
-            "model":      model,
-            "messages":   messages,
-            "stream":     False,
-            "max_tokens": 150,
-        }
-        if tools:
-            payload["tools"]       = tools
-            payload["tool_choice"] = "auto"
-        try:
-            resp = requests.post(endpoint, json=payload, timeout=timeout)
-            resp.raise_for_status()
-            choice = resp.json().get("choices", [{}])[0]
-            msg    = choice.get("message", {})
-            # OpenAI tool_calls format → normalise to Ollama-style
-            raw_tc  = msg.get("tool_calls") or []
-            tc_list = [
-                {
-                    "id":       t.get("id", ""),
-                    "function": {
-                        "name":      t["function"]["name"],
-                        "arguments": (
-                            json.loads(t["function"]["arguments"])
-                            if isinstance(t["function"].get("arguments"), str)
-                            else t["function"].get("arguments", {})
-                        ),
-                    },
-                }
-                for t in raw_tc
-            ]
-            return {
-                "content":    (msg.get("content") or "").strip(),
-                "tool_calls": tc_list,
-            }
+            return _parse_openai_response(resp.json())
         except Exception as e:
             raise RuntimeError(f"OpenAI-compatible LLM call failed: {e}")
 
-    # ── Ollama ──────────────────────────────────────────────────────────────
-    endpoint = f"{url}/api/chat"
+    # Native Ollama
     payload = {
-        "model":      model,
-        "messages":   messages,
-        "stream":     False,
-        "keep_alive": -1,
-        "options":    {"num_predict": 150, "num_gpu": 99},
+        "model": model, "messages": messages,
+        "stream": False, "keep_alive": -1,
+        "options": {"num_predict": 150, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools
@@ -374,24 +282,14 @@ def call_llm(
     try:
         resp = requests.post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
-        data = resp.json()
-        msg  = data.get("message", {})
-        return {
-            "content":    (msg.get("content") or "").strip(),
-            "tool_calls": msg.get("tool_calls") or [],
-        }
+        return _parse_ollama_response(resp.json())
     except requests.exceptions.ConnectionError as e:
         print(f"[LLM] ConnectionError — trying to restart Ollama… ({e})")
         if ensure_ollama_running():
             try:
                 resp = requests.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
-                data = resp.json()
-                msg  = data.get("message", {})
-                return {
-                    "content":    (msg.get("content") or "").strip(),
-                    "tool_calls": msg.get("tool_calls") or [],
-                }
+                return _parse_ollama_response(resp.json())
             except Exception:
                 pass
         raise RuntimeError(
@@ -414,10 +312,7 @@ def call_llm_text(
     model:   str | None = None,
     timeout: int = 120,
 ) -> str:
-    """
-    Simple text-only generation (no tools).
-    Used by planner, executor, error_handler, code_helper, dev_agent.
-    """
+    """Simple text-only generation (no tools). Used by planner, executor, etc."""
     url, default_model = get_llm_settings()
     provider = get_llm_provider()
     m        = model or default_model
@@ -427,31 +322,31 @@ def call_llm_text(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    if provider == "ollama_cloud":
-        # Ollama Cloud API — uses OpenAI-compatible endpoint with auth
+    if provider in ("ollama_cloud", "openai"):
         endpoint = f"{url}/v1/chat/completions"
-        headers = _get_auth_headers()
-        payload = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
+        headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
+        payload  = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
         try:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
-            return (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+            return _parse_openai_response(resp.json())["content"]
         except Exception as e:
-            raise RuntimeError(f"Ollama Cloud API text call failed: {e}")
+            raise RuntimeError(f"OpenAI-compatible text call failed: {e}")
 
+    # Native Ollama
     endpoint = f"{url}/api/chat"
-    payload = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
+    payload  = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
 
     try:
         resp = requests.post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
-        return (resp.json().get("message", {}).get("content") or "").strip()
+        return _parse_ollama_response(resp.json())["content"]
     except requests.exceptions.ConnectionError:
         if ensure_ollama_running():
             try:
                 resp = requests.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
-                return (resp.json().get("message", {}).get("content") or "").strip()
+                return _parse_ollama_response(resp.json())["content"]
             except Exception:
                 pass
         raise RuntimeError(
@@ -466,242 +361,96 @@ def call_llm_text(
             try:
                 resp = requests.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
-                return (resp.json().get("message", {}).get("content") or "").strip()
+                return _parse_ollama_response(resp.json())["content"]
             except Exception as fe:
                 raise RuntimeError(f"LLM fallback also failed: {fe}")
         raise RuntimeError(f"LLM text call failed: {e}")
 
 
-def _stream_ollama_cloud(
-    messages: list,
-    tools:    list | None,
+# ---------------------------------------------------------------------------
+# Streaming — shared SSE parser (used by Ollama Cloud + OpenAI-compatible)
+# ---------------------------------------------------------------------------
+
+def _stream_sse(
+    url:      str,
+    endpoint: str,
+    payload:  dict,
+    headers:  dict,
     timeout:  int,
+    label:    str,
+    error_msg: str,
 ) -> Generator[dict, None, None]:
     """
-    Streaming backend for Ollama Cloud API (https://ollama.com/v1).
+    Shared SSE streaming parser for OpenAI-compatible endpoints.
 
-    Uses OpenAI-compatible SSE format with Bearer token authentication.
+    Yields sentence events and a final 'done' event with content + tool_calls.
     """
-    url, model = get_llm_settings()
-    endpoint   = f"{url}/v1/chat/completions"
-    headers    = _get_auth_headers()
+    full_content = ""
+    buf          = ""
+    tc_fragments: dict[int, dict] = {}
 
-    payload: dict = {
-        "model":      model,
-        "messages":   messages,
-        "stream":     True,
-        "max_tokens": 150,
-    }
-    if tools:
-        payload["tools"]       = tools
-        payload["tool_choice"] = "auto"
+    with requests.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
+        resp.raise_for_status()
 
-    try:
-        with requests.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
-            resp.raise_for_status()
-            full_content = ""
-            buf          = ""
-            # tool_call fragments: index → {"id", "function": {"name", "arguments"}}
-            tc_fragments: dict[int, dict] = {}
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
 
-            for raw in resp.iter_lines():
-                if not raw:
-                    continue
-                # SSE lines look like: b"data: {...}" or b"data: [DONE]"
-                line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
+            choice = chunk.get("choices", [{}])[0]
+            delta  = choice.get("delta", {})
+            text   = delta.get("content") or ""
+
+            full_content += text
+            buf          += text
+
+            # Yield complete sentences
+            while True:
+                m = _SENT_END.search(buf)
+                if not m:
                     break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
+                sentence = buf[: m.start() + 1].strip()
+                buf      = buf[m.end():]
+                if sentence:
+                    yield {"type": "sentence", "text": sentence}
 
-                choice = chunk.get("choices", [{}])[0]
-                delta  = choice.get("delta", {})
-                text   = delta.get("content") or ""
-
-                full_content += text
-                buf          += text
-
-                # Accumulate sentence boundaries for streaming TTS
-                while True:
-                    m = _SENT_END.search(buf)
-                    if not m:
-                        break
-                    sentence = buf[: m.start() + 1].strip()
-                    buf      = buf[m.end():]
-                    if sentence:
-                        yield {"type": "sentence", "text": sentence}
-
-                # Accumulate streaming tool-call fragments
-                for tc in (delta.get("tool_calls") or []):
-                    idx = tc.get("index", 0)
-                    if idx not in tc_fragments:
-                        tc_fragments[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
-                    frag = tc_fragments[idx]
-                    frag["id"] = frag["id"] or tc.get("id", "")
-                    fn = tc.get("function", {})
-                    frag["function"]["name"]      += fn.get("name") or ""
-                    frag["function"]["arguments"] += fn.get("arguments") or ""
-
-                finish = choice.get("finish_reason")
-                if finish in ("stop", "tool_calls", "length"):
-                    break
-
-            # Flush any trailing content
-            if buf.strip():
-                yield {"type": "sentence", "text": buf.strip()}
-
-            # Parse accumulated tool-call argument strings → dicts
-            tool_calls: list = []
-            for idx in sorted(tc_fragments):
+            # Accumulate streaming tool-call fragments
+            for tc in (delta.get("tool_calls") or []):
+                idx = tc.get("index", 0)
+                if idx not in tc_fragments:
+                    tc_fragments[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
                 frag = tc_fragments[idx]
-                args = frag["function"]["arguments"]
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    pass   # leave as raw string; _execute_tool handles it
-                tool_calls.append({
-                    "id":       frag["id"],
-                    "function": {"name": frag["function"]["name"], "arguments": args},
-                })
+                frag["id"] = frag["id"] or tc.get("id", "")
+                fn = tc.get("function", {})
+                frag["function"]["name"]      += fn.get("name") or ""
+                frag["function"]["arguments"] += fn.get("arguments") or ""
 
-            yield {
-                "type":       "done",
-                "content":    full_content.strip(),
-                "tool_calls": tool_calls,
-            }
+            finish = choice.get("finish_reason")
+            if finish in ("stop", "tool_calls", "length"):
+                break
 
-    except requests.exceptions.ConnectionError:
-        raise RuntimeError(
-            f"Cannot reach Ollama Cloud API at {url}.\n"
-            "Check your internet connection and API key."
-        )
-    except requests.exceptions.Timeout:
-        raise RuntimeError("Ollama Cloud API stream timed out.")
-    except requests.exceptions.HTTPError as e:
-        raise RuntimeError(f"Ollama Cloud API HTTP error: {e.response.status_code}")
-    except Exception as e:
-        raise RuntimeError(f"Ollama Cloud API stream failed: {e}")
+    if buf.strip():
+        yield {"type": "sentence", "text": buf.strip()}
 
+    tool_calls = _parse_openai_tool_calls([
+        {"id": frag["id"], "function": {"name": frag["function"]["name"], "arguments": frag["function"]["arguments"]}}
+        for frag in (tc_fragments[idx] for idx in sorted(tc_fragments))
+    ])
 
-def _stream_openai(
-    messages: list,
-    tools:    list | None,
-    timeout:  int,
-) -> Generator[dict, None, None]:
-    """
-    Streaming backend for OpenAI-compatible servers (LM Studio, LocalAI, Jan…).
-
-    Parses Server-Sent Events (SSE) and accumulates streaming tool-call fragments
-    so the output format is identical to the Ollama backend.
-    """
-    url, model = get_llm_settings()
-    endpoint   = f"{url}/v1/chat/completions"
-
-    payload: dict = {
-        "model":      model,
-        "messages":   messages,
-        "stream":     True,
-        "max_tokens": 150,
+    yield {
+        "type":       "done",
+        "content":    full_content.strip(),
+        "tool_calls": tool_calls,
     }
-    if tools:
-        payload["tools"]       = tools
-        payload["tool_choice"] = "auto"
-
-    try:
-        with requests.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
-            resp.raise_for_status()
-            full_content = ""
-            buf          = ""
-            # tool_call fragments: index → {"id", "function": {"name", "arguments"}}
-            tc_fragments: dict[int, dict] = {}
-
-            for raw in resp.iter_lines():
-                if not raw:
-                    continue
-                # SSE lines look like: b"data: {...}" or b"data: [DONE]"
-                line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-
-                choice = chunk.get("choices", [{}])[0]
-                delta  = choice.get("delta", {})
-                text   = delta.get("content") or ""
-
-                full_content += text
-                buf          += text
-
-                # Accumulate sentence boundaries for streaming TTS
-                while True:
-                    m = _SENT_END.search(buf)
-                    if not m:
-                        break
-                    sentence = buf[: m.start() + 1].strip()
-                    buf      = buf[m.end():]
-                    if sentence:
-                        yield {"type": "sentence", "text": sentence}
-
-                # Accumulate streaming tool-call fragments
-                for tc in (delta.get("tool_calls") or []):
-                    idx = tc.get("index", 0)
-                    if idx not in tc_fragments:
-                        tc_fragments[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
-                    frag = tc_fragments[idx]
-                    frag["id"] = frag["id"] or tc.get("id", "")
-                    fn = tc.get("function", {})
-                    frag["function"]["name"]      += fn.get("name") or ""
-                    frag["function"]["arguments"] += fn.get("arguments") or ""
-
-                finish = choice.get("finish_reason")
-                if finish in ("stop", "tool_calls", "length"):
-                    break
-
-            # Flush any trailing content
-            if buf.strip():
-                yield {"type": "sentence", "text": buf.strip()}
-
-            # Parse accumulated tool-call argument strings → dicts
-            tool_calls: list = []
-            for idx in sorted(tc_fragments):
-                frag = tc_fragments[idx]
-                args = frag["function"]["arguments"]
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    pass   # leave as raw string; _execute_tool handles it
-                tool_calls.append({
-                    "id":       frag["id"],
-                    "function": {"name": frag["function"]["name"], "arguments": args},
-                })
-
-            yield {
-                "type":       "done",
-                "content":    full_content.strip(),
-                "tool_calls": tool_calls,
-            }
-
-    except requests.exceptions.ConnectionError:
-        raise RuntimeError(
-            f"Cannot reach OpenAI-compatible server at {url}.\n"
-            "Make sure LM Studio / LocalAI / Jan is running and the server is started."
-        )
-    except requests.exceptions.Timeout:
-        raise RuntimeError("OpenAI-compatible stream timed out.")
-    except requests.exceptions.HTTPError as e:
-        raise RuntimeError(f"OpenAI-compatible HTTP error: {e.response.status_code}")
-    except Exception as e:
-        raise RuntimeError(f"OpenAI-compatible stream failed: {e}")
 
 
 def call_llm_stream(
@@ -710,39 +459,49 @@ def call_llm_stream(
     timeout:  int = 120,
 ) -> Generator[dict, None, None]:
     """
-    Streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible backend.
+    Streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible.
 
     Yields:
-        {"type": "sentence", "text": str}   — each complete sentence as it arrives
-        {"type": "done", "content": str, "tool_calls": list}  — when stream ends
-
-    Sentences are split on [.!?] + whitespace so TTS can start immediately.
-    Tool calls always appear in the final "done" event.
+        {"type": "sentence", "text": str}          — each complete sentence
+        {"type": "done", "content": str, "tool_calls": list}  — stream end
     """
-    provider = get_llm_provider()
-    if provider == "ollama_cloud":
-        yield from _stream_ollama_cloud(messages, tools, timeout)
-        return
-    if provider == "openai":
-        yield from _stream_openai(messages, tools, timeout)
-        return
-
     url, model = get_llm_settings()
-    endpoint   = f"{url}/api/chat"
+    provider   = get_llm_provider()
 
-    payload: dict = {
-        "model":      model,
-        "messages":   messages,
-        "stream":     True,
-        "keep_alive": -1,
-        # 150 tokens ≈ 100 words ≈ 3-4 sentences — enough for any voice reply.
-        # num_gpu:99 pushes all layers to GPU; num_thread removed (Ollama auto-tunes).
-        "options":    {"num_predict": 150, "num_gpu": 99},
+    if provider in ("ollama_cloud", "openai"):
+        endpoint = f"{url}/v1/chat/completions"
+        headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
+        payload: dict = {
+            "model": model, "messages": messages,
+            "stream": True, "max_tokens": 150,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        try:
+            yield from _stream_sse(url, endpoint, payload, headers, timeout, provider, provider)
+        except requests.exceptions.ConnectionError:
+            label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
+            raise RuntimeError(f"Cannot reach {label} at {url}.")
+        except requests.exceptions.Timeout:
+            raise RuntimeError(f"{provider} stream timed out.")
+        except requests.exceptions.HTTPError as e:
+            raise RuntimeError(f"{provider} HTTP error: {e.response.status_code}")
+        except Exception as e:
+            raise RuntimeError(f"{provider} stream failed: {e}")
+        return
+
+    # Native Ollama — different wire format (JSON lines, not SSE)
+    endpoint = f"{url}/api/chat"
+    payload = {
+        "model": model, "messages": messages,
+        "stream": True, "keep_alive": -1,
+        "options": {"num_predict": 150, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools
 
-    def _do_stream() -> Generator[dict, None, None]:
+    def _do_native_stream() -> Generator[dict, None, None]:
         with requests.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
             resp.raise_for_status()
             full_content = ""
@@ -759,17 +518,15 @@ def call_llm_stream(
 
                 msg   = chunk.get("message", {})
                 delta = msg.get("content") or ""
-
                 full_content += delta
                 buf          += delta
 
-                # Yield complete sentences as they accumulate
                 while True:
                     m = _SENT_END.search(buf)
                     if not m:
                         break
                     sentence = buf[: m.start() + 1].strip()
-                    buf      = buf[m.end() :]
+                    buf      = buf[m.end():]
                     if sentence:
                         yield {"type": "sentence", "text": sentence}
 
@@ -780,7 +537,6 @@ def call_llm_stream(
                 if chunk.get("done"):
                     if buf.strip():
                         yield {"type": "sentence", "text": buf.strip()}
-
                     yield {
                         "type":       "done",
                         "content":    full_content.strip(),
@@ -789,11 +545,11 @@ def call_llm_stream(
                     return
 
     try:
-        yield from _do_stream()
+        yield from _do_native_stream()
     except requests.exceptions.ConnectionError as e:
         print(f"[LLM] Stream ConnectionError — trying to restart Ollama… ({e})")
         if ensure_ollama_running():
-            yield from _do_stream()
+            yield from _do_native_stream()
             return
         raise RuntimeError(
             f"Cannot connect to Ollama at {url}. "

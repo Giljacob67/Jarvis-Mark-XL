@@ -69,6 +69,22 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
+# Tell Qt where its platform plugins live before the first Qt import in ui.py.
+# Without this, QLibraryInfo returns an empty path when launched from a
+# launchd .app bundle because Python's app-bundle context doesn't find the
+# venv-installed PyQt6 plugins automatically.
+if _sys.platform == "darwin":
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _py_ver = f"python{_sys.version_info.major}.{_sys.version_info.minor}"
+    _qt_plugins = _os.path.join(
+        _here, ".venv", "lib", _py_ver, "site-packages", "PyQt6", "Qt6", "plugins"
+    )
+    if _os.path.isdir(_qt_plugins):
+        _os.environ.setdefault("QT_PLUGIN_PATH", _qt_plugins)
+        _os.environ.setdefault(
+            "QT_QPA_PLATFORM_PLUGIN_PATH", _os.path.join(_qt_plugins, "platforms")
+        )
+
 from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
 from core.llm_client import call_llm, call_llm_stream, get_llm_settings
@@ -96,15 +112,7 @@ from actions.game_updater      import game_updater
 # Paths
 # ---------------------------------------------------------------------------
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
-
-
-BASE_DIR        = _get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
+from core.paths import BASE_DIR, API_CONFIG_PATH, PROMPT_PATH
 
 SAMPLE_RATE_IN = 16_000
 BLOCK_SIZE     = 1_024
@@ -692,17 +700,36 @@ class JarvisLocal:
                 # Find the position after the wake word
                 idx = text_lower.find(variant)
                 after_wake = text[idx + len(variant):].strip()
-                
+
                 # Remove leading punctuation if present
                 if after_wake and after_wake[0] in ",.!?;:":
                     after_wake = after_wake[1:].strip()
-                
+
                 if after_wake:
                     return True, after_wake
                 else:
                     # Just the wake word without command
                     return True, ""
-        
+
+        # Fuzzy fallback — Whisper badly mishears the short English name "Jarvis"
+        # (seen: "AirGerves", "service", "travis"...). Compare each leading token
+        # against the variants with a similarity ratio so near-misses still wake.
+        import difflib
+        words = [w.strip(",.!?;:") for w in text_lower.split()]
+        for i, word in enumerate(words[:3]):
+            if not word:
+                continue
+            score = max(
+                difflib.SequenceMatcher(None, word, v).ratio()
+                for v in self.WAKE_WORD_VARIANTS
+            )
+            if score >= 0.6:
+                # Rebuild the command from the original-cased words after the match.
+                command = " ".join(text.split()[i + 1:]).strip()
+                if command and command[0] in ",.!?;:":
+                    command = command[1:].strip()
+                return True, command
+
         return False, ""
 
     # ------------------------------------------------------------------
@@ -1285,6 +1312,9 @@ class JarvisLocal:
                         chunk = q.get(timeout=0.1)
                         audio = vad.process(chunk.flatten())
                         if audio is not None:
+                            if self._stt is None:
+                                self.ui.set_state("IDLE")
+                                continue   # STT failed to load — don't crash the loop
                             self.ui.set_state("THINKING")
                             text = self._stt.transcribe(audio)
                             if text.strip():

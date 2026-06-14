@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import sys
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -35,14 +34,7 @@ import platform
 
 import requests
 
-
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-_BASE        = _base_dir()
+from core.paths import BASE_DIR as _BASE
 _CONFIG_PATH = _BASE / "config" / "api_keys.json"
 
 _IMG_MAX_W = 640

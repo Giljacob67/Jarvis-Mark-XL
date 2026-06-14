@@ -4,10 +4,11 @@ import json
 import re
 import string
 import subprocess
-import sys
 import time
 import random
 from pathlib import Path
+
+from core.paths import BASE_DIR as _BASE
 
 try:
     import pyautogui
@@ -23,13 +24,6 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-_BASE         = _base_dir()
 _CONFIG_PATH  = _BASE / "config" / "api_keys.json"
 _MEMORY_PATH  = _BASE / "memory" / "long_term.json"
 

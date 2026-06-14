@@ -1,6 +1,5 @@
 #desktop.py
 import os
-import sys
 import json
 import shutil
 import subprocess
@@ -17,11 +16,6 @@ except (ImportError, Exception):
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
-
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
 
 def _get_desktop() -> Path:
     if _OS == "Linux":
