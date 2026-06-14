@@ -237,6 +237,11 @@ class JarvisLocal:
         self._tts_queue:      queue.Queue = queue.Queue()
         self._conversation:   list[dict]  = []
 
+        # Persistent conversation storage
+        from memory.conversation_db import init_db, create_conversation
+        init_db()
+        self._conv_id = create_conversation()
+
         self.ui.on_text_command = self._on_text_command
 
     # ------------------------------------------------------------------
@@ -657,6 +662,7 @@ class JarvisLocal:
             return "Shutting down."
 
         result = "Done."
+        _t0 = time.time()
         try:
             with ThreadPoolExecutor(max_workers=1) as _ex:
                 _fut = _ex.submit(_dispatch)
@@ -673,11 +679,34 @@ class JarvisLocal:
             traceback.print_exc()
             self.speak_error(name, e)
 
+        _duration_ms = int((time.time() - _t0) * 1000)
+        log.info("Tool %s completed in %dms", name, _duration_ms)
+
+        # Persist tool call to SQLite
+        try:
+            from memory.conversation_db import add_message, add_tool_call
+            msg_id = add_message(self._conv_id, "tool", f"[{name}] {str(result)[:200]}")
+            add_tool_call(msg_id, name, args, str(result)[:500], _duration_ms)
+        except Exception:
+            pass
+
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
         return result
+
+    # ------------------------------------------------------------------
+    # Persistence helper
+    # ------------------------------------------------------------------
+
+    def _persist_assistant(self, content: str) -> None:
+        """Save assistant response to SQLite conversation history."""
+        try:
+            from memory.conversation_db import add_message
+            add_message(self._conv_id, "assistant", content)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # LLM processing loop
@@ -701,6 +730,10 @@ class JarvisLocal:
         self.ui.add_history("user", user_text)
 
         self._conversation.append({"role": "user", "content": user_text})
+
+        # Persist to SQLite
+        from memory.conversation_db import add_message
+        add_message(self._conv_id, "user", user_text)
 
         MAX_HISTORY = 10
         if len(self._conversation) > MAX_HISTORY:
@@ -754,6 +787,7 @@ class JarvisLocal:
                     self._conversation.append(assistant_msg)
                     self.ui.write_log(f"Jarvis: {final_content}")
                     self.ui.add_history("jarvis", final_content)
+                    self._persist_assistant(final_content)
                     self.speak(final_content)
                 break
 
@@ -786,6 +820,7 @@ class JarvisLocal:
                 self._conversation.append(assistant_msg2)
                 self.ui.write_log(f"Jarvis: {final_content}")
                 self.ui.add_history("jarvis", final_content)
+                self._persist_assistant(final_content)
                 if not _streamed:
                     self.speak(final_content)
                 break
@@ -843,6 +878,7 @@ class JarvisLocal:
                 self._conversation.append(_amsg)
                 self.ui.write_log(f"Jarvis: {_ack}")
                 self.ui.add_history("jarvis", _ack)
+                self._persist_assistant(_ack)
                 self.speak(_ack)
                 break
 
@@ -854,6 +890,7 @@ class JarvisLocal:
                 self._conversation.append(_amsg)
                 self.ui.write_log(f"Jarvis: {_reply}")
                 self.ui.add_history("jarvis", _reply)
+                self._persist_assistant(_reply)
                 self.speak(_reply)
                 break
 
@@ -1092,6 +1129,14 @@ class JarvisLocal:
             self.ui.write_log("SYS: JARVIS online.")
             self.ui.set_state("LISTENING")
             self.ui.set_startup_status("● JARVIS online · Voice loading in background…")
+
+            # Start web dashboard
+            try:
+                from web.dashboard import start_web_dashboard
+                start_web_dashboard()
+                self.ui.write_log("SYS: Web dashboard at http://localhost:5050")
+            except Exception as e:
+                self.ui.write_log(f"ERR: Web dashboard — {e}")
 
             threading.Thread(target=self._tts_worker,        daemon=True).start()
             threading.Thread(target=self._text_command_loop,  daemon=True).start()
