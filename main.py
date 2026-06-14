@@ -626,6 +626,31 @@ class JarvisLocal:
                 r = email_tool(parameters=args, player=self.ui, speak=self.speak)
                 return r or "Done."
 
+            elif name == "spotify":
+                from actions.spotify_tool import spotify_tool
+                r = spotify_tool(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
+            elif name == "notes":
+                from actions.notes_tool import notes_tool
+                r = notes_tool(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
+            elif name == "translator":
+                from actions.translator_tool import translator_tool
+                r = translator_tool(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
+            elif name == "timer":
+                from actions.timer_tool import timer_tool
+                r = timer_tool(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
+            elif name == "calculator":
+                from actions.calculator_tool import calculator_tool
+                r = calculator_tool(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
             elif name == "notify":
                 from actions.notify_tool import notify_tool
                 r = notify_tool(parameters=args, player=self.ui)

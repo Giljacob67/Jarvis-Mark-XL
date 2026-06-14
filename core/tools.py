@@ -400,6 +400,87 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "spotify",
+        "description": (
+            "Controls Spotify playback. Use for: playing music, pausing, "
+            "skipping tracks, checking what's playing."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "play | pause | resume | next | previous | status"},
+                "query":  {"type": "STRING", "description": "Song/artist/album to play"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "notes",
+        "description": (
+            "Manage personal notes. Use for: saving quick notes, listing notes, "
+            "searching through notes, deleting notes."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "add | list | search | delete | clear"},
+                "text":   {"type": "STRING", "description": "Note text (for add)"},
+                "query":  {"type": "STRING", "description": "Search query (for search)"},
+                "id":     {"type": "INTEGER", "description": "Note ID (for delete)"},
+                "limit":  {"type": "INTEGER", "description": "Max results (for list/search)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "translator",
+        "description": (
+            "Translates text between languages. Use for: translating phrases, "
+            "detecting language of text."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":          {"type": "STRING", "description": "translate | detect"},
+                "text":            {"type": "STRING", "description": "Text to translate or detect"},
+                "target_language": {"type": "STRING", "description": "Target language (for translate, default: English)"},
+                "source_language": {"type": "STRING", "description": "Source language (for translate, default: auto)"},
+            },
+            "required": ["action", "text"]
+        }
+    },
+    {
+        "name": "timer",
+        "description": (
+            "Set countdown timers. Use for: setting reminders, cooking timers, "
+            "pomodoro timers. Speaks when done."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "start | list | cancel"},
+                "seconds": {"type": "INTEGER", "description": "Duration in seconds (for start)"},
+                "label":   {"type": "STRING", "description": "Timer label (for start)"},
+                "id":      {"type": "INTEGER", "description": "Timer ID (for cancel)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "calculator",
+        "description": (
+            "Calculates mathematical expressions. Use for: math calculations, "
+            "conversions, unit math. Supports basic ops and math functions."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "expression": {"type": "STRING", "description": "Math expression to evaluate"},
+            },
+            "required": ["expression"]
+        }
+    },
 ]
 
 
