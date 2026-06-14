@@ -1187,6 +1187,14 @@ class JarvisLocal:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # ── Global exception handler — prevents PyQt6 abort() on slot errors ──
+    def _global_excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        if exc_type is SystemExit:
+            raise exc_type
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+    sys.excepthook = _global_excepthook
+
     # ── Pre-import torch in background immediately ─────────────────────────
     # By the time the TTS thread starts (~5s from now), torch will already
     # be in sys.modules — removing it from the TTS critical path entirely.

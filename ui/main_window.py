@@ -822,8 +822,11 @@ class FileDropZone(QWidget):
         layout.addWidget(self._canvas)
 
     def _animate(self):
-        self._dash_offset = (self._dash_offset + 0.8) % 20
-        self._canvas.update()
+        try:
+            self._dash_offset = (self._dash_offset + 0.8) % 20
+            self._canvas.update()
+        except Exception:
+            pass
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():
@@ -1734,60 +1737,66 @@ class MainWindow(QMainWindow):
         self._startup_panel = panel
 
     def _destroy_startup_panel(self) -> None:
-        if self._startup_panel:
-            self._startup_panel.hide()
-            self._startup_panel.deleteLater()
+        try:
+            if self._startup_panel:
+                self._startup_panel.hide()
+                self._startup_panel.deleteLater()
+                self._startup_panel = None
+        except Exception:
             self._startup_panel = None
 
     def _update_metrics(self):
-        snap = _metrics.snapshot()
-
-        # CPU
-        cpu = snap["cpu"]
-        self._bar_cpu.set_value(cpu, f"{cpu:.0f}%")
-
-        # MEM
-        mem = snap["mem"]
-        self._bar_mem.set_value(mem, f"{mem:.0f}%")
-
-        # NET
-        net = snap["net"]
-        if net < 1.0:
-            net_str = f"{net*1024:.0f}KB/s"
-        else:
-            net_str = f"{net:.1f}MB/s"
-        net_pct = min(100, net * 10)  # 10 MB/s = %100
-        self._bar_net.set_value(net_pct, net_str)
-
-        # GPU
-        gpu = snap["gpu"]
-        if gpu >= 0:
-            self._bar_gpu.set_value(gpu, f"{gpu:.0f}%")
-        else:
-            self._bar_gpu.set_value(0, "N/A")
-
-        # TMP
-        tmp = snap["tmp"]
-        if tmp >= 0:
-            tmp_pct = min(100, (tmp / 100) * 100)
-            self._bar_tmp.set_value(tmp_pct, f"{tmp:.0f}°C")
-        else:
-            self._bar_tmp.set_value(0, "N/A")
-
         try:
-            boot_t  = psutil.boot_time()
-            elapsed = time.time() - boot_t
-            h = int(elapsed // 3600)
-            m = int((elapsed % 3600) // 60)
-            self._uptime_lbl.setText(f"UP  {h:02d}:{m:02d}")
-        except Exception:
-            self._uptime_lbl.setText("UP  --:--")
+            snap = _metrics.snapshot()
 
-        try:
-            proc_count = len(psutil.pids())
-            self._proc_lbl.setText(f"PROC  {proc_count}")
+            # CPU
+            cpu = snap["cpu"]
+            self._bar_cpu.set_value(cpu, f"{cpu:.0f}%")
+
+            # MEM
+            mem = snap["mem"]
+            self._bar_mem.set_value(mem, f"{mem:.0f}%")
+
+            # NET
+            net = snap["net"]
+            if net < 1.0:
+                net_str = f"{net*1024:.0f}KB/s"
+            else:
+                net_str = f"{net:.1f}MB/s"
+            net_pct = min(100, net * 10)  # 10 MB/s = %100
+            self._bar_net.set_value(net_pct, net_str)
+
+            # GPU
+            gpu = snap["gpu"]
+            if gpu >= 0:
+                self._bar_gpu.set_value(gpu, f"{gpu:.0f}%")
+            else:
+                self._bar_gpu.set_value(0, "N/A")
+
+            # TMP
+            tmp = snap["tmp"]
+            if tmp >= 0:
+                tmp_pct = min(100, (tmp / 100) * 100)
+                self._bar_tmp.set_value(tmp_pct, f"{tmp:.0f}°C")
+            else:
+                self._bar_tmp.set_value(0, "N/A")
+
+            try:
+                boot_t  = psutil.boot_time()
+                elapsed = time.time() - boot_t
+                h = int(elapsed // 3600)
+                m = int((elapsed % 3600) // 60)
+                self._uptime_lbl.setText(f"UP  {h:02d}:{m:02d}")
+            except Exception:
+                self._uptime_lbl.setText("UP  --:--")
+
+            try:
+                proc_count = len(psutil.pids())
+                self._proc_lbl.setText(f"PROC  {proc_count}")
+            except Exception:
+                self._proc_lbl.setText("PROC  --")
         except Exception:
-            self._proc_lbl.setText("PROC  --")
+            pass
 
 
     def _build_header(self) -> QWidget:
@@ -1835,8 +1844,11 @@ class MainWindow(QMainWindow):
         return w
 
     def _tick_clock(self):
-        self._clock_lbl.setText(time.strftime("%H:%M:%S"))
-        self._date_lbl.setText(time.strftime("%a %d %b %Y"))
+        try:
+            self._clock_lbl.setText(time.strftime("%H:%M:%S"))
+            self._date_lbl.setText(time.strftime("%a %d %b %Y"))
+        except Exception:
+            pass
 
     def _build_left_panel(self) -> QWidget:
         w = QWidget()
