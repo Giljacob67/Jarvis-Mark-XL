@@ -2,6 +2,12 @@
 Quick STT test — run from terminal to verify voice recognition.
 Usage: .venv/bin/python scripts/test_stt.py
 """
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import sounddevice as sd
 import time

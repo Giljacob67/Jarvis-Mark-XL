@@ -7,6 +7,12 @@ Or access from web dashboard: http://localhost:5050/audio_test
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import json
 import time
 
