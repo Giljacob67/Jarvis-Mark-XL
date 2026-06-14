@@ -29,3 +29,9 @@ logs/
 models/
 *.bin
 *.gguf
+
+# Runtime data
+memory/*.json
+memory/*.db
+memory/*.db-journal
+memory/clipboard_history.json

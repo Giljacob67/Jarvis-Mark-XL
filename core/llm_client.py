@@ -277,7 +277,7 @@ def call_llm(
     payload = {
         "model": model, "messages": messages,
         "stream": False, "keep_alive": -1,
-        "options": {"num_predict": 150, "num_gpu": 99},
+        "options": {"num_predict": 500, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools
@@ -510,7 +510,7 @@ def call_llm_stream(
     payload = {
         "model": model, "messages": messages,
         "stream": True, "keep_alive": -1,
-        "options": {"num_predict": 150, "num_gpu": 99},
+        "options": {"num_predict": 500, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools
