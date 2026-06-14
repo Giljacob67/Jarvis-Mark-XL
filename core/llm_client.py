@@ -325,6 +325,13 @@ def call_llm_text(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
+    # Check cache first
+    from core.cache import cached_llm_call, cache_llm_result
+    cached = cached_llm_call(messages, model=m)
+    if cached is not None:
+        log.debug("Cache hit for prompt: %s", prompt[:50])
+        return cached.get("content", "")
+
     if provider in ("ollama_cloud", "openai"):
         endpoint = f"{url}/v1/chat/completions"
         headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
@@ -332,7 +339,9 @@ def call_llm_text(
         try:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
-            return _parse_openai_response(resp.json())["content"]
+            result = _parse_openai_response(resp.json())
+            cache_llm_result(messages, result, model=m)
+            return result["content"]
         except Exception as e:
             raise RuntimeError(f"OpenAI-compatible text call failed: {e}") from e
 
@@ -343,7 +352,9 @@ def call_llm_text(
     try:
         resp = requests.post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
-        return _parse_ollama_response(resp.json())["content"]
+        result = _parse_ollama_response(resp.json())
+        cache_llm_result(messages, result, model=m)
+        return result["content"]
     except requests.exceptions.ConnectionError:
         if ensure_ollama_running():
             try:

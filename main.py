@@ -621,6 +621,11 @@ class JarvisLocal:
                 r = clipboard_tool(parameters=args, player=self.ui)
                 return r or "Done."
 
+            elif name == "email_tool":
+                from actions.email_tool import email_tool
+                r = email_tool(parameters=args, player=self.ui, speak=self.speak)
+                return r or "Done."
+
             elif name == "notify":
                 from actions.notify_tool import notify_tool
                 r = notify_tool(parameters=args, player=self.ui)

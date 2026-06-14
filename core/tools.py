@@ -381,6 +381,25 @@ TOOL_DECLARATIONS = [
             "required": ["category", "key", "value"]
         }
     },
+    {
+        "name": "email_tool",
+        "description": (
+            "Sends or reads emails. Use for: sending an email to someone, "
+            "checking recent emails, reading inbox."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "send | read"},
+                "to":      {"type": "STRING", "description": "Recipient email address (for send)"},
+                "subject": {"type": "STRING", "description": "Email subject (for send)"},
+                "body":    {"type": "STRING", "description": "Email body text (for send)"},
+                "folder":  {"type": "STRING", "description": "Mail folder (for read, default: INBOX)"},
+                "limit":   {"type": "INTEGER", "description": "Number of emails to read (default: 5)"},
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 
