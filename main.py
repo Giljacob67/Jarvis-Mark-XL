@@ -158,9 +158,9 @@ class _VADBuffer:
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 0.7,    # silence after last word → send to STT
-        speech_thresh:  float = 0.008,  # RMS above this = speech  (0.008 catches voice at 3-4 m; raise if mic picks up too much room noise)
-        silence_thresh: float = 0.004,  # RMS below this = silence (half of speech_thresh — hysteresis prevents mid-sentence cuts)
+        silence_sec:    float = 1.5,    # silence after last word → send to STT (1.5s allows "Jarvis, open WhatsApp" as one utterance)
+        speech_thresh:  float = 0.008,  # RMS above this = speech
+        silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
         min_speech_sec: float = 0.3,
         max_speech_sec: float = 30.0,
     ):
@@ -308,7 +308,7 @@ class JarvisLocal:
                 difflib.SequenceMatcher(None, word, v).ratio()
                 for v in self.WAKE_WORD_VARIANTS
             )
-            if score >= 0.6:
+            if score >= 0.8:
                 # Rebuild the command from the original-cased words after the match.
                 command = " ".join(text.split()[i + 1:]).strip()
                 if command and command[0] in ",.!?;:":
