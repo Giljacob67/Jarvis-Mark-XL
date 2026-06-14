@@ -154,44 +154,63 @@ def _load_system_prompt() -> str:
 # ---------------------------------------------------------------------------
 
 class _VADBuffer:
-    """Energy-based VAD: buffers audio until end of utterance."""
+    """Enhanced VAD: energy + spectral centroid for robust speech detection."""
 
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 1.5,    # silence after last word → send to STT (1.5s allows "Jarvis, open WhatsApp" as one utterance)
+        silence_sec:    float = 1.5,    # silence after last word → send to STT
         speech_thresh:  float = 0.008,  # RMS above this = speech
         silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
         min_speech_sec: float = 0.3,
         max_speech_sec: float = 30.0,
+        centroid_thresh: float = 1500.0,  # spectral centroid above this = voice (not noise)
     ):
-        self._sr            = sample_rate
-        self._sil_n         = int(silence_sec * sample_rate)
-        self._speech_thresh = speech_thresh
-        self._sil_thresh    = silence_thresh
-        self._min_n         = int(min_speech_sec * sample_rate)
-        self._max_n         = int(max_speech_sec * sample_rate)
-        self._buf:          list[np.ndarray] = []
-        self._in_spch       = False
-        self._sil_cnt       = 0
+        self._sr             = sample_rate
+        self._sil_n          = int(silence_sec * sample_rate)
+        self._speech_thresh  = speech_thresh
+        self._sil_thresh     = silence_thresh
+        self._min_n          = int(min_speech_sec * sample_rate)
+        self._max_n          = int(max_speech_sec * sample_rate)
+        self._centroid_thresh = centroid_thresh
+        self._buf:           list[np.ndarray] = []
+        self._in_spch        = False
+        self._sil_cnt        = 0
+
+    def _spectral_centroid(self, chunk: np.ndarray) -> float:
+        """Compute spectral centroid — higher values indicate voice vs noise."""
+        fft = np.abs(np.fft.rfft(chunk))
+        freqs = np.fft.rfftfreq(len(chunk), d=1.0 / self._sr)
+        total = np.sum(fft)
+        if total < 1e-10:
+            return 0.0
+        return float(np.sum(freqs * fft) / total)
+
     def process(self, chunk: np.ndarray) -> np.ndarray | None:
         """
         Feed one audio chunk (float32 mono).
         Returns complete utterance when speech ends, otherwise None.
 
-        Uses hysteresis thresholds so the detector doesn't flicker:
-          - speech starts when RMS > speech_thresh  (0.008 = ~3-4 m range)
-          - speech ends only when RMS < silence_thresh  (0.004 = half of start)
-        The gap between the two thresholds prevents mid-sentence cuts on
-        natural pauses and quiet consonants.
+        Uses energy + spectral centroid:
+          - speech starts when RMS > speech_thresh AND centroid > 1500 Hz
+          - speech ends only when RMS < silence_thresh
+        The centroid check rejects background noise (fans, hums) that have
+        low spectral content.
         """
-        rms     = float(np.sqrt(np.mean(chunk ** 2)))
-        total_n = sum(len(c) for c in self._buf)
+        rms      = float(np.sqrt(np.mean(chunk ** 2)))
+        centroid = self._spectral_centroid(chunk)
+        total_n  = sum(len(c) for c in self._buf)
 
-        if rms > self._speech_thresh:
+        # Voice detection: energy above threshold AND spectral centroid indicates voice
+        is_voice = rms > self._speech_thresh and centroid > self._centroid_thresh
+        is_noise = rms > self._speech_thresh and centroid <= self._centroid_thresh
+
+        if is_voice:
             self._in_spch = True
             self._sil_cnt = 0
             self._buf.append(chunk.copy())
+        elif is_noise and not self._in_spch:
+            pass  # reject noise when not already in speech
         elif self._in_spch:
             self._buf.append(chunk.copy())
             if rms < self._sil_thresh:
@@ -237,6 +256,9 @@ class JarvisLocal:
         self._text_queue:     queue.Queue = queue.Queue()
         self._tts_queue:      queue.Queue = queue.Queue()
         self._conversation:   list[dict]  = []
+
+        # Continuous mode: listen without wake word
+        self._continuous_mode = self._config.get("continuous_mode", False)
 
         # Persistent conversation storage
         from memory.conversation_db import init_db, create_conversation
@@ -954,7 +976,8 @@ class JarvisLocal:
                 blocksize=BLOCK_SIZE,
                 callback=callback,
             ):
-                self.ui.write_log("SYS: Mic active (Whisper STT) — Wake word: JARVIS")
+                mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
+                self.ui.write_log(f"SYS: Mic active (Whisper STT) — {mode_label}")
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)
@@ -966,18 +989,22 @@ class JarvisLocal:
                             self.ui.set_state("THINKING")
                             text = self._stt.transcribe(audio)
                             if text.strip():
-                                # Check for wake word
-                                is_wake, command = self._check_wake_word(text)
-                                if is_wake:
-                                    if command:
-                                        self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
-                                        self._process_message(command)
-                                    else:
-                                        # Just the wake word - respond with a short acknowledgment
-                                        self.ui.write_log(f"WAKE: '{text}' (no command)")
-                                        self.speak("Sim?")
+                                if self._continuous_mode:
+                                    # Continuous mode: process everything directly
+                                    self.ui.write_log(f"USER: '{text}'")
+                                    self._process_message(text)
                                 else:
-                                    self.ui.write_log(f"SKIP: '{text}' (no wake word)")
+                                    # Wake word mode: check for wake word
+                                    is_wake, command = self._check_wake_word(text)
+                                    if is_wake:
+                                        if command:
+                                            self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
+                                            self._process_message(command)
+                                        else:
+                                            self.ui.write_log(f"WAKE: '{text}' (no command)")
+                                            self.speak("Sim?")
+                                    else:
+                                        self.ui.write_log(f"SKIP: '{text}' (no wake word)")
                     except queue.Empty:
                         pass
         except Exception as e:
@@ -1005,24 +1032,27 @@ class JarvisLocal:
                 blocksize=4096,
                 callback=callback,
             ):
-                self.ui.write_log("SYS: Mic active (Vosk STT) — Wake word: JARVIS")
+                mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
+                self.ui.write_log(f"SYS: Mic active (Vosk STT) — {mode_label}")
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)
                         text, is_final = self._stt.process_chunk(chunk.tobytes())
                         if is_final and text.strip():
-                            # Check for wake word
-                            is_wake, command = self._check_wake_word(text)
-                            if is_wake:
-                                if command:
-                                    self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
-                                    self._process_message(command)
-                                else:
-                                    # Just the wake word - respond with a short acknowledgment
-                                    self.ui.write_log(f"WAKE: '{text}' (no command)")
-                                    self.speak("Sim?")
+                            if self._continuous_mode:
+                                self.ui.write_log(f"USER: '{text}'")
+                                self._process_message(text)
                             else:
-                                self.ui.write_log(f"SKIP: '{text}' (no wake word)")
+                                is_wake, command = self._check_wake_word(text)
+                                if is_wake:
+                                    if command:
+                                        self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
+                                        self._process_message(command)
+                                    else:
+                                        self.ui.write_log(f"WAKE: '{text}' (no command)")
+                                        self.speak("Sim?")
+                                else:
+                                    self.ui.write_log(f"SKIP: '{text}' (no wake word)")
                     except queue.Empty:
                         pass
         except Exception as e:
