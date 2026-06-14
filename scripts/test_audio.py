@@ -29,10 +29,17 @@ SAMPLE_RATE = 16_000
 
 def test_microphone(duration: float = 3.0) -> dict:
     """Record audio and return stats."""
+    # Use device's native sample rate
+    device_info = sd.query_devices(kind="input")
+    native_rate = int(device_info["default_samplerate"])
+    
+    print(f"Dispositivo: {device_info['name']}")
+    print(f"Sample rate: {native_rate}Hz (padrão: {SAMPLE_RATE}Hz)")
     print(f"Gravando {duration}s de áudio...")
+    
     audio = sd.rec(
-        int(duration * SAMPLE_RATE),
-        samplerate=SAMPLE_RATE,
+        int(duration * native_rate),
+        samplerate=native_rate,
         channels=1,
         dtype="float32",
     )
@@ -40,12 +47,13 @@ def test_microphone(duration: float = 3.0) -> dict:
 
     rms = float(np.sqrt(np.mean(audio ** 2)))
     peak = float(np.max(np.abs(audio)))
-    duration_actual = len(audio) / SAMPLE_RATE
+    duration_actual = len(audio) / native_rate
 
     result = {
         "duration": round(duration_actual, 2),
         "rms": round(rms, 6),
         "peak": round(peak, 6),
+        "sample_rate": native_rate,
         "status": "OK" if rms > 0.001 else "SILENT",
     }
 
@@ -57,6 +65,7 @@ def test_microphone(duration: float = 3.0) -> dict:
     if result["status"] == "SILENT":
         print("\n⚠️  Microfone não está captando áudio!")
         print("   Verifique: Preferências → Som → Entrada")
+        print("   Ou tente: System Preferences → Sound → Input")
     else:
         print("\n✅ Microfone funcionando!")
 
