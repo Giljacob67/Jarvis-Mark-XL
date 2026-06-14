@@ -307,6 +307,46 @@ def api_stats():
 
 
 # ---------------------------------------------------------------------------
+# Audio Test
+# ---------------------------------------------------------------------------
+
+@app.route("/audio_test")
+def audio_test_page():
+    cfg = _load_cfg()
+    engine = cfg.get("tts_engine", "edgetts")
+    voice = cfg.get("tts_voice", "pt-BR-AntonioNeural")
+    stt_model = cfg.get("stt_model", "medium")
+    llm_model = cfg.get("llm_model", "qwen3.5:2b")
+
+    content = f"""
+    <div class="card">
+      <h2>Audio Test</h2>
+      <p>Test microphone, STT, TTS, and LLM from the browser.</p>
+
+      <h2>Current Config</h2>
+      <table>
+        <tr><td>STT Model</td><td>{stt_model}</td></tr>
+        <tr><td>TTS Engine</td><td>{engine}</td></tr>
+        <tr><td>TTS Voice</td><td>{voice}</td></tr>
+        <tr><td>LLM Model</td><td>{llm_model}</td></tr>
+      </table>
+
+      <h2>Quick Test</h2>
+      <p>Run from terminal:</p>
+      <pre>cd ~/Jarvis-Mark-XL && .venv/bin/python scripts/test_audio.py</pre>
+
+      <h2>Test Commands</h2>
+      <table>
+        <tr><th>Command</th><th>Purpose</th></tr>
+        <tr><td><code>python scripts/test_audio.py</code></td><td>Full audio test (mic + STT + TTS + LLM)</td></tr>
+        <tr><td><code>python scripts/test_stt.py</code></td><td>STT only (records 3s and transcribes)</td></tr>
+      </table>
+    </div>
+    """
+    return render_template_string(_LAYOUT("Audio Test", content))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
