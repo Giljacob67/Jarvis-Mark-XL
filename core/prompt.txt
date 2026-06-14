@@ -27,6 +27,7 @@ TOOL EXAMPLES:
 - "Quanto e 2 + 2" -> calculator(expression="2 + 2")
 - "Timer de 30 segundos" -> timer(action="start", seconds=30)
 - "Anote: comprar leite" -> notes(action="add", text="comprar leite")
+- "Salve uma nota: reuniao amanha" -> notes(action="add", text="reuniao amanha")
 - "Qual a temperatura em SP" -> weather_report(city="Sao Paulo")
 - "Pesquisar sobre Python" -> web_search(query="Python")
 - "Meu nome e Joao" -> save_memory(category="identity", key="name", value="Joao")
