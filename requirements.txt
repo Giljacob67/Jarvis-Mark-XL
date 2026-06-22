@@ -15,6 +15,7 @@ sounddevice
 numpy
 soundfile
 requests
+apscheduler
 
 # ── Web automation & search ───────────────────────────────────────────────
 playwright
@@ -52,6 +53,13 @@ edge-tts              # EdgeTTS  (default, free, requires internet)
 # ── Local LLM ─────────────────────────────────────────────────────────────
 # Ollama must be installed separately: https://ollama.com
 # Then pull a model:  ollama pull qwen2.5:7b
+
+# ── Enhanced features (optional — installed when enabled in config) ────────
+# pyannote.audio        # Speaker diarization (continuous_mode)
+# pyannote.core         # Core pyannote types
+# speechbrain           # Voice print / speaker verification (ECAPA-TDNN)
+# agentdb               # Vector memory with HNSW indexing
+# reasoningbank         # Pattern distillation & trajectory learning
 
 # ── New features (optional — installed on first use) ──────────────────────
 # python-kasa           # Smart home TP-Link Kasa (smart_home tool)

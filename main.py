@@ -90,6 +90,13 @@ from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
 from core.llm_client import call_llm, call_llm_stream, get_llm_settings
 
+# Diarization for continuous mode
+try:
+    from core.diarization import DiarizationProcessor, is_available as diarization_available
+    _DIARIZATION_READY = True
+except ImportError:
+    _DIARIZATION_READY = False
+
 from actions.file_processor    import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
@@ -513,6 +520,212 @@ class JarvisLocal:
         self._text_queue.put(text)
 
     # ------------------------------------------------------------------
+    # Proactive scheduler
+    # ------------------------------------------------------------------
+
+    def _start_proactive_scheduler(self) -> None:
+        """Start background scheduler for proactive checks."""
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            from apscheduler.triggers.interval import IntervalTrigger
+
+            self._scheduler = BackgroundScheduler(daemon=True)
+            
+            # Check calendar for upcoming meetings every 5 minutes
+            self._scheduler.add_job(
+                self._proactive_calendar_check,
+                IntervalTrigger(minutes=5),
+                id="calendar_check",
+                replace_existing=True,
+            )
+            
+            # Check system health every 10 minutes
+            self._scheduler.add_job(
+                self._proactive_system_check,
+                IntervalTrigger(minutes=10),
+                id="system_check",
+                replace_existing=True,
+            )
+            
+            # Daily memory distillation at 3 AM
+            self._scheduler.add_job(
+                self._proactive_daily_distillation,
+                trigger="cron",
+                hour=3,
+                minute=0,
+                id="daily_distillation",
+                replace_existing=True,
+            )
+
+            self._scheduler.start()
+            self.ui.write_log("SYS: Proactive scheduler started")
+        except Exception as e:
+            self.ui.write_log(f"WARN: Proactive scheduler failed: {e}")
+
+    def _proactive_calendar_check(self) -> None:
+        """Check for upcoming calendar events and notify."""
+        try:
+            from actions.calendar_tool import calendar_tool
+            from datetime import datetime, timedelta
+            
+            now = datetime.now()
+            in_30min = now + timedelta(minutes=30)
+            
+            result = calendar_tool(parameters={
+                "action": "list",
+                "start": now.isoformat(),
+                "end": in_30min.isoformat(),
+            }, player=self.ui)
+            
+            if result and "no events" not in result.lower():
+                self.ui.write_log(f"PROACTIVE: Upcoming events: {result[:100]}")
+                if not self.ui.muted and not self._speaking:
+                    self.speak(f"Sir, you have an upcoming event: {result[:200]}")
+        except Exception as e:
+            self.ui.write_log(f"Proactive calendar check failed: {e}")
+
+    def _proactive_system_check(self) -> None:
+        """Check system health and notify on issues."""
+        try:
+            import psutil
+            
+            # Check CPU
+            cpu = psutil.cpu_percent(interval=1)
+            if cpu > 90:
+                self.ui.write_log(f"PROACTIVE: High CPU usage: {cpu}%")
+                if not self.ui.muted:
+                    self.speak(f"Warning: CPU usage at {cpu} percent")
+            
+            # Check memory
+            mem = psutil.virtual_memory()
+            if mem.percent > 90:
+                self.ui.write_log(f"PROACTIVE: High memory usage: {mem.percent}%")
+                if not self.ui.muted:
+                    self.speak(f"Warning: Memory usage at {mem.percent} percent")
+            
+            # Check disk
+            disk = psutil.disk_usage('/')
+            if disk.percent > 95:
+                self.ui.write_log(f"PROACTIVE: Disk almost full: {disk.percent}%")
+                if not self.ui.muted:
+                    self.speak("Warning: Disk space critically low")
+                    
+        except Exception as e:
+            self.ui.write_log(f"Proactive system check failed: {e}")
+
+    def _proactive_daily_distillation(self) -> None:
+        """Run daily pattern distillation using ReasoningBank."""
+        try:
+            if not self._config.get("distillation_enabled", False):
+                return
+            
+            self.ui.write_log("SYS: Running daily distillation...")
+            
+            # Get recent conversations
+            from memory.conversation_db import get_messages
+            recent = get_messages(self._conv_id, limit=200)
+            
+            if len(recent) < 10:
+                return
+            
+            # Build conversation summary
+            conv_text = "\n".join([
+                f"{m['role']}: {m['content'][:500]}" for m in recent
+            ])
+            
+            # Use LLM to extract patterns
+            from core.llm_client import call_llm_text
+            system = (
+                "You are JARVIS analyzing conversation patterns. "
+                "Extract: 1) Recurring topics 2) User preferences 3) Frequent requests 4) New facts learned. "
+                "Output as JSON with keys: topics, preferences, requests, facts."
+            )
+            prompt = f"Analyze these conversations:\n{conv_text[:8000]}"
+            
+            analysis = call_llm_text(prompt, system=system)
+            
+            # Store distilled patterns
+            from memory.memory_manager import update_memory
+            try:
+                import json
+                patterns = json.loads(analysis)
+                if isinstance(patterns, dict):
+                    for cat, items in patterns.items():
+                        if isinstance(items, list):
+                            for i, item in enumerate(items):
+                                update_memory({cat: {f"distilled_{cat}_{i}": {"value": str(item)}}})
+                    self.ui.write_log(f"SYS: Distilled {len(patterns)} pattern categories")
+            except Exception:
+                # Store raw analysis
+                update_memory({"notes": {"distillation_latest": {"value": analysis[:500]}}})
+                
+        except Exception as e:
+            self.ui.write_log(f"Daily distillation failed: {e}")
+
+    # ------------------------------------------------------------------
+    # New tool handlers
+    # ------------------------------------------------------------------
+
+    def _enroll_voice(self, duration: int = 10) -> str:
+        """Enroll user voice for speaker verification."""
+        try:
+            from core.diarization import enroll_user_from_audio
+            import sounddevice as sd
+            import numpy as np
+            
+            self.ui.write_log(f"SYS: Recording voice sample for {duration}s...")
+            self.speak(f"Recording voice sample for {duration} seconds. Please speak naturally.")
+            
+            # Record audio
+            sample_rate = 16000
+            audio = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
+            sd.wait()
+            audio = audio.flatten()
+            
+            if enroll_user_from_audio(audio, sample_rate):
+                self.ui.write_log("SYS: Voice enrollment successful")
+                self.speak("Voice enrollment complete. I will now recognize your voice.")
+                return "Voice enrollment successful."
+            else:
+                self.ui.write_log("ERR: Voice enrollment failed")
+                self.speak("Voice enrollment failed. Please try again.")
+                return "Voice enrollment failed."
+                
+        except Exception as e:
+            self.ui.write_log(f"ERR: Voice enrollment error: {e}")
+            return f"Voice enrollment error: {e}"
+
+    def _vector_search(self, query: str, category: str | None = None, limit: int = 5) -> str:
+        """Semantic search over vector memories."""
+        try:
+            from memory.vector_memory import search_memory, is_available
+            
+            if not is_available():
+                return "Vector memory not available. Enable vector_memory_enabled in config."
+            
+            results = search_memory(query, category=category, limit=limit)
+            
+            if not results:
+                return "No relevant memories found."
+            
+            lines = [f"Found {len(results)} relevant memories:"]
+            for r in results:
+                lines.append(f"  [{r['category']}/{r['key']}] (score: {r['score']:.2f}) {r['content'][:200]}")
+            
+            return "\n".join(lines)
+            
+        except Exception as e:
+            return f"Vector search error: {e}"
+
+    def _trigger_distillation(self) -> str:
+        """Manually trigger pattern distillation."""
+        try:
+            self._proactive_daily_distillation()
+            return "Distillation triggered. Check logs for results."
+        except Exception as e:
+            return f"Distillation error: {e}"
+
+    # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
     # ------------------------------------------------------------------
 
@@ -674,6 +887,18 @@ class JarvisLocal:
                 r = calculator_tool(parameters=args, player=self.ui, speak=self.speak)
                 return r or "Done."
 
+            elif name == "enroll_voice":
+                r = self._enroll_voice(args.get("duration", 10))
+                return r
+
+            elif name == "vector_search":
+                r = self._vector_search(args.get("query", ""), args.get("category"), args.get("limit", 5))
+                return r
+
+            elif name == "trigger_distillation":
+                r = self._trigger_distillation()
+                return r
+
             elif name == "notify":
                 from actions.notify_tool import notify_tool
                 r = notify_tool(parameters=args, player=self.ui)
@@ -704,6 +929,13 @@ class JarvisLocal:
         # shutdown_jarvis bypasses timeout — must run in main thread context
         if name == "shutdown_jarvis":
             self.ui.write_log("SYS: Shutdown requested.")
+            
+            # Stop proactive scheduler
+            if hasattr(self, '_scheduler') and self._scheduler:
+                try:
+                    self._scheduler.shutdown(wait=False)
+                except Exception:
+                    pass
 
             def _shutdown():
                 import time as _t, os as _os
@@ -792,8 +1024,20 @@ class JarvisLocal:
         if len(self._conversation) > MAX_HISTORY:
             self._conversation = self._conversation[-MAX_HISTORY:]
 
+        # Include semantically relevant memories from vector DB
+        vector_memories = ""
+        try:
+            from memory.memory_manager import format_vector_memory_for_prompt
+            vector_memories = format_vector_memory_for_prompt(user_text, limit=5)
+        except Exception:
+            pass
+
+        system_prompt = self._build_system_prompt()
+        if vector_memories:
+            system_prompt += "\n\n" + vector_memories
+
         messages = [
-            {"role": "system", "content": self._build_system_prompt()}
+            {"role": "system", "content": system_prompt}
         ] + list(self._conversation)
 
         # Tools whose output needs a second LLM round to summarise/interpret.
@@ -958,6 +1202,15 @@ class JarvisLocal:
         """Mic → VAD → Whisper → Wake Word Check → LLM loop."""
         vad = _VADBuffer()
         q: queue.Queue = queue.Queue(maxsize=200)
+        
+        # Diarization processor for continuous mode
+        dia_processor = None
+        if self._continuous_mode and _DIARIZATION_READY and diarization_available():
+            try:
+                dia_processor = DiarizationProcessor(sample_rate=SAMPLE_RATE_IN)
+                self.ui.write_log("SYS: Speaker diarization enabled")
+            except Exception as e:
+                self.ui.write_log(f"WARN: Diarization init failed: {e}")
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
@@ -990,8 +1243,15 @@ class JarvisLocal:
                             text = self._stt.transcribe(audio)
                             if text.strip():
                                 if self._continuous_mode:
-                                    # Continuous mode: process everything directly
-                                    self.ui.write_log(f"USER: '{text}'")
+                                    # Continuous mode: check if user is speaking
+                                    if dia_processor:
+                                        speaker, is_user = dia_processor.process_chunk(audio)
+                                        if not is_user:
+                                            self.ui.write_log(f"SKIP: '{text}' (speaker: {speaker}, not enrolled user)")
+                                            continue
+                                        self.ui.write_log(f"USER ({speaker}): '{text}'")
+                                    else:
+                                        self.ui.write_log(f"USER: '{text}'")
                                     self._process_message(text)
                                 else:
                                     # Wake word mode: check for wake word
@@ -1198,6 +1458,19 @@ class JarvisLocal:
                 self.ui.write_log("SYS: Web dashboard at http://localhost:5050")
             except Exception as e:
                 self.ui.write_log(f"ERR: Web dashboard — {e}")
+
+            # Migrate to vector memory if enabled
+            if self._config.get("vector_memory_enabled", False):
+                try:
+                    from memory.memory_manager import migrate_to_vector_db
+                    count = migrate_to_vector_db()
+                    if count:
+                        self.ui.write_log(f"SYS: Migrated {count} memories to vector DB")
+                except Exception as e:
+                    self.ui.write_log(f"WARN: Vector memory migration failed: {e}")
+
+            # Start proactive scheduler
+            self._start_proactive_scheduler()
 
             threading.Thread(target=self._tts_worker,        daemon=True).start()
             threading.Thread(target=self._text_command_loop,  daemon=True).start()

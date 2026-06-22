@@ -481,6 +481,49 @@ TOOL_DECLARATIONS = [
             "required": ["expression"]
         }
     },
+    {
+        "name": "enroll_voice",
+        "description": (
+            "Enrolls the user's voice for speaker verification. "
+            "Records audio for the specified duration and creates a voice print. "
+            "Use when user says 'enroll my voice', 'learn my voice', 'voice enrollment'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "duration": {"type": "INTEGER", "description": "Recording duration in seconds (default: 10)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "vector_search",
+        "description": (
+            "Semantic search over long-term memories using vector embeddings. "
+            "Use for finding related memories, facts, or patterns without exact keywords."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "Search query"},
+                "category": {"type": "STRING", "description": "Optional category filter"},
+                "limit": {"type": "INTEGER", "description": "Max results (default: 5)"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "trigger_distillation",
+        "description": (
+            "Manually triggers pattern distillation from recent conversations. "
+            "Extracts recurring topics, preferences, and learned facts."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+            "required": []
+        }
+    },
 ]
 
 

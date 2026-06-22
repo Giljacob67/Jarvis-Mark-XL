@@ -16,6 +16,18 @@ MAX_VALUE_LENGTH = 600
 MEMORY_MAX_CHARS = 6000
 MEMORY_BACKUP_MAX = 7   # keep last 7 daily backups
 
+# Try to import vector memory
+try:
+    from memory.vector_memory import (
+        store_memory as _vector_store,
+        search_memory as _vector_search,
+        sync_from_json as _vector_sync,
+        is_available as _vector_available,
+    )
+    _VECTOR_ENABLED = True
+except ImportError:
+    _VECTOR_ENABLED = False
+
 # Categories ordered by deletion priority (higher = deleted first when trimming)
 _CATEGORY_WEIGHT = {
     "identity":      0,   # never deleted
@@ -160,6 +172,19 @@ def update_memory(memory_update: dict) -> dict:
     if _recursive_update(memory, memory_update):
         save_memory(memory)
         log.info("Saved: %s", list(memory_update.keys()))
+        
+        # Also store in vector DB for semantic search
+        if _VECTOR_ENABLED:
+            for category, entries in memory_update.items():
+                if isinstance(entries, dict):
+                    for key, entry in entries.items():
+                        if isinstance(entry, dict) and "value" in entry:
+                            _vector_store(
+                                content=entry["value"],
+                                category=category,
+                                key=key,
+                                metadata={k: v for k, v in entry.items() if k != "value"},
+                            )
     return memory
 
 def format_memory_for_prompt(memory: dict | None) -> str:
@@ -237,6 +262,31 @@ def format_memory_for_prompt(memory: dict | None) -> str:
         result = result[:1997] + "…"
 
     return result + "\n"
+
+
+def format_vector_memory_for_prompt(query: str, limit: int = 5) -> str:
+    """Get semantically relevant memories for the current query."""
+    if not _VECTOR_ENABLED:
+        return ""
+    try:
+        results = _vector_search(query, limit=limit)
+        if not results:
+            return ""
+        lines = ["[SEMANTICALLY RELEVANT MEMORIES]"]
+        for r in results:
+            lines.append(f"  - [{r['category']}/{r['key']}] (relevance: {r['score']:.2f}) {r['content'][:200]}")
+        return "\n".join(lines) + "\n"
+    except Exception as e:
+        log.warning("Vector memory search failed: %s", e)
+        return ""
+
+
+def migrate_to_vector_db() -> int:
+    """One-time migration from JSON to vector DB."""
+    if not _VECTOR_ENABLED:
+        return 0
+    return _vector_sync(MEMORY_PATH)
+
 
 def remember(key: str, value: str, category: str = "notes") -> str:
     valid = {"identity", "preferences", "projects", "relationships", "wishes", "notes"}

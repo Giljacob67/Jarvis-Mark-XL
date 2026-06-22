@@ -33,7 +33,25 @@ _CORE: list[tuple[str, str]] = [
     ("send2trash",         "send2trash"),
     ("pptx",               "python-pptx"),
     ("youtube_transcript_api", "youtube-transcript-api"),
+    ("apscheduler",        "apscheduler"),
 ]
+
+# Enhanced features (installed when enabled in config)
+_ENHANCED: dict[str, list[tuple[str, str]]] = {
+    "diarization": [
+        ("pyannote.audio", "pyannote.audio"),
+        ("pyannote.core", "pyannote.core"),
+    ],
+    "voice_print": [
+        ("speechbrain", "speechbrain"),
+    ],
+    "vector_memory": [
+        ("agentdb", "agentdb"),
+    ],
+    "distillation": [
+        ("reasoningbank", "reasoningbank"),
+    ],
+}
 
 # Windows-only (pywinauto, pycaw, win10toast, comtypes)
 _WINDOWS: list[tuple[str, str]] = [
@@ -99,6 +117,16 @@ def install_for_config(config: dict, log: Callable | None = None) -> None:
     needed += _TTS.get(tts, [])
     if platform.system() == "Windows":
         needed += _WINDOWS
+
+    # Enhanced features based on config flags
+    if config.get("diarization_enabled", False):
+        needed += _ENHANCED.get("diarization", [])
+    if config.get("voice_print_enabled", False):
+        needed += _ENHANCED.get("voice_print", [])
+    if config.get("vector_memory_enabled", False):
+        needed += _ENHANCED.get("vector_memory", [])
+    if config.get("distillation_enabled", False):
+        needed += _ENHANCED.get("distillation", [])
 
     # Deduplicate (preserve order, key = pip name)
     seen: set[str] = set()
