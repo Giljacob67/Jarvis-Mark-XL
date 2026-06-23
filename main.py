@@ -905,6 +905,61 @@ class JarvisLocal:
 
         return f"Unknown verify_voiceprint action: {action}. Use: status, enroll, test"
 
+    def _manage_routines(self, args: dict) -> str:
+        """Create, list, enable, disable, or delete automation routines."""
+        from actions.routines import (
+            add_routine, remove_routine, toggle_routine,
+            list_routines, get_routine,
+        )
+
+        action = args.get("action", "list").lower().strip()
+
+        if action == "list":
+            routines = list_routines()
+            if not routines:
+                return "No routines configured. Create one with action 'create'."
+            lines = [f"Found {len(routines)} routine(s):"]
+            for r in routines:
+                state = "ON" if r.get("enabled", True) else "OFF"
+                rtype = r.get("type", "cron")
+                cmd = r.get("command", "")[:60]
+                lines.append(f"  [{state}] {r['name']} ({rtype}): {cmd}")
+            return "\n".join(lines)
+
+        elif action == "create":
+            name = args.get("name", "")
+            command = args.get("command", "")
+            if not name or not command:
+                return "Need 'name' and 'command' for create."
+            routine_type = args.get("routine_type", "cron")
+            schedule = args.get("schedule")
+            interval = args.get("interval")
+            return add_routine(
+                name=name, command=command, routine_type=routine_type,
+                schedule=schedule, interval=interval,
+                execute_fn=lambda cmd: self._text_queue.put(cmd),
+            )
+
+        elif action == "enable":
+            rid = args.get("routine_id", "")
+            if not rid:
+                return "Need 'routine_id' for enable."
+            return toggle_routine(rid, enabled=True)
+
+        elif action == "disable":
+            rid = args.get("routine_id", "")
+            if not rid:
+                return "Need 'routine_id' for disable."
+            return toggle_routine(rid, enabled=False)
+
+        elif action == "delete":
+            rid = args.get("routine_id", "")
+            if not rid:
+                return "Need 'routine_id' for delete."
+            return remove_routine(rid)
+
+        return f"Unknown action: {action}. Use: create, list, enable, disable, delete"
+
     # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
     # ------------------------------------------------------------------
@@ -1103,6 +1158,10 @@ class JarvisLocal:
                 from actions.kasa_tool import kasa_tool
                 r = kasa_tool(parameters=args, player=self.ui)
                 return r or "Done."
+
+            elif name == "manage_routines":
+                r = self._manage_routines(args)
+                return r
 
             elif name == "remote_control":
                 r = self._remote_control(args.get("action", "status"))
@@ -1722,6 +1781,14 @@ class JarvisLocal:
 
             # Start proactive scheduler
             self._start_proactive_scheduler()
+
+            # Initialize automation routines
+            try:
+                from actions.routines import init_routines
+                init_routines(lambda cmd: self._text_queue.put(cmd))
+                self.ui.write_log("SYS: Automation routines loaded")
+            except Exception as e:
+                self.ui.write_log(f"WARN: Routines init failed: {e}")
 
             threading.Thread(target=self._tts_worker,        daemon=True).start()
             threading.Thread(target=self._text_command_loop,  daemon=True).start()

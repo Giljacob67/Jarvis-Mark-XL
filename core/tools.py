@@ -611,6 +611,49 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "manage_routines",
+        "description": (
+            "Create, list, enable, disable, or delete automation routines. "
+            "Types: 'cron' (time-based), 'interval' (repeat), 'once' (one-shot). "
+            "Examples: 'turn on lights at 7pm every weekday', "
+            "'remind me in 30 minutes', 'check weather every 2 hours'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "Action: create, list, enable, disable, delete"
+                },
+                "name": {
+                    "type": "STRING",
+                    "description": "Routine name (for create)"
+                },
+                "command": {
+                    "type": "STRING",
+                    "description": "Command to execute (for create)"
+                },
+                "routine_type": {
+                    "type": "STRING",
+                    "description": "Type: cron, interval, once (for create, default: cron)"
+                },
+                "schedule": {
+                    "type": "OBJECT",
+                    "description": "Cron schedule: {hour, minute, day_of_week} (for cron type)"
+                },
+                "interval": {
+                    "type": "OBJECT",
+                    "description": "Interval: {minutes, hours} (for interval type)"
+                },
+                "routine_id": {
+                    "type": "STRING",
+                    "description": "Routine ID or name (for enable/disable/delete)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 
