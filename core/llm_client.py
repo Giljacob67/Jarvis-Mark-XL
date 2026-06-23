@@ -1,25 +1,12 @@
 """
-Local LLM client for MARK XL.
+Multi-provider LLM client for MARK XL.
 
-Supports three backends — selected via  "llm_provider"  in config/api_keys.json:
-
-  "llm_provider": "ollama"   (default)
-        Uses Ollama's native /api/chat endpoint.
-        Download: https://ollama.com
-        Default port: 11434
-
-  "llm_provider": "ollama_cloud"
-        Uses Ollama Cloud API (https://ollama.com/v1).
-        Requires "ollama_api_key" in config.
-        Models: qwen3-coder:480b-cloud, gpt-oss:120b-cloud, etc.
-
-  "llm_provider": "openai"
-        Uses any OpenAI-compatible server: LM Studio, Jan, LocalAI,
-        llama.cpp server, vLLM, etc.
-        LM Studio download: https://lmstudio.ai   (default port: 1234)
-        Set  "llm_url": "http://localhost:1234"  in config.
-        Note: tool-calling support depends on the model; use a model that
-        supports function/tool calls (e.g. Qwen2.5, Llama-3.1, Mistral).
+Supports:
+  "ollama"        — Local Ollama (default)
+  "openai"        — OpenAI API (GPT-4o, GPT-4o-mini, etc.)
+  "anthropic"     — Anthropic API (Claude 3.5 Sonnet, Claude 3 Haiku, etc.)
+  "openrouter"    — OpenRouter (access to 100+ models via single API)
+  "ollama_cloud"  — Ollama Cloud API
 """
 from __future__ import annotations
 
@@ -32,6 +19,7 @@ import time
 from collections.abc import Generator
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from core.logger import get_logger
 from core.paths import API_CONFIG_PATH as CONFIG_PATH
@@ -41,18 +29,59 @@ log = get_logger("llm")
 _SENT_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)\s*\n')
 
 _DEFAULTS = {
-    "llm_url":             "http://localhost:11434",
-    "llm_model":           "qwen3.5:4b",
-    "llm_provider":        "ollama",
-    "llm_fallback_model":  "",
+    "llm_url":      "http://localhost:11434",
+    "llm_model":    "qwen3.5:4b",
+    "llm_provider": "ollama",
 }
 
-# ── Connection pooling — reuse TCP connections to Ollama ─────────────────
+# ── Provider configs ──────────────────────────────────────────────────────
+
+PROVIDER_CONFIGS = {
+    "ollama": {
+        "name": "Ollama (Local)",
+        "url": "http://localhost:11434",
+        "models": ["qwen3.5:4b", "qwen3.5:2b", "qwen3.5:9b", "llama3.2", "mistral"],
+        "requires_key": False,
+    },
+    "openai": {
+        "name": "OpenAI",
+        "url": "https://api.openai.com/v1",
+        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        "requires_key": True,
+        "key_name": "openai_api_key",
+    },
+    "anthropic": {
+        "name": "Anthropic (Claude)",
+        "url": "https://api.anthropic.com",
+        "models": ["claude-sonnet-4-20250514", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+        "requires_key": True,
+        "key_name": "anthropic_api_key",
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "url": "https://openrouter.ai/api/v1",
+        "models": [
+            "openai/gpt-4o", "openai/gpt-4o-mini",
+            "anthropic/claude-3.5-sonnet", "anthropic/claude-3-haiku",
+            "google/gemini-pro-1.5", "meta-llama/llama-3.1-70b-instruct",
+            "qwen/qwen-2.5-72b-instruct",
+        ],
+        "requires_key": True,
+        "key_name": "openrouter_api_key",
+    },
+    "ollama_cloud": {
+        "name": "Ollama Cloud",
+        "url": "https://ollama.com/v1",
+        "models": ["qwen3-coder:480b-cloud", "gpt-oss:120b-cloud"],
+        "requires_key": True,
+        "key_name": "ollama_api_key",
+    },
+}
+
+# ── Connection pooling ────────────────────────────────────────────────────
 _session = requests.Session()
 _session.headers.update({"Connection": "keep-alive"})
-# Pre-configure adapter for connection pooling
-from requests.adapters import HTTPAdapter
-_adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=0)
+_adapter = HTTPAdapter(pool_connections=4, pool_maxsize=8, max_retries=0)
 _session.mount("http://", _adapter)
 _session.mount("https://", _adapter)
 
@@ -69,21 +98,70 @@ def _load_config() -> dict:
 
 
 def get_llm_settings() -> tuple[str, str]:
-    """Returns (base_url, model_name)."""
-    cfg   = _load_config()
-    url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
+    cfg = _load_config()
+    provider = cfg.get("llm_provider", "ollama").strip().lower()
+    url = cfg.get("llm_url", _DEFAULTS["llm_url"]).rstrip("/")
     model = cfg.get("llm_model", _DEFAULTS["llm_model"])
+
+    # Auto-set URL if not explicitly configured
+    if provider in PROVIDER_CONFIGS and not cfg.get("llm_url"):
+        url = PROVIDER_CONFIGS[provider]["url"]
+
     return url, model
 
 
 def get_llm_provider() -> str:
-    """Returns 'ollama', 'ollama_cloud', or 'openai'."""
     raw = _load_config().get("llm_provider", "ollama").strip().lower()
-    if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp"):
+    if raw in ("openai",):
         return "openai"
+    if raw in ("anthropic", "claude"):
+        return "anthropic"
+    if raw in ("openrouter",):
+        return "openrouter"
     if raw in ("ollama_cloud", "ollamacloud"):
         return "ollama_cloud"
     return "ollama"
+
+
+def get_provider_info() -> dict:
+    """Get current provider info for display."""
+    provider = get_llm_provider()
+    url, model = get_llm_settings()
+    config = PROVIDER_CONFIGS.get(provider, {})
+    return {
+        "provider": provider,
+        "name": config.get("name", provider),
+        "url": url,
+        "model": model,
+        "requires_key": config.get("requires_key", False),
+        "available_models": config.get("models", []),
+    }
+
+
+def _get_api_key(provider: str) -> str:
+    """Get API key for the specified provider."""
+    cfg = _load_config()
+    config = PROVIDER_CONFIGS.get(provider, {})
+    key_name = config.get("key_name", "")
+
+    # Check config first, then environment
+    key = cfg.get(key_name, "") or os.environ.get(key_name.upper(), "")
+    return key
+
+
+def _get_auth_headers(provider: str) -> dict:
+    """Get auth headers for the specified provider."""
+    key = _get_api_key(provider)
+    if not key:
+        return {}
+
+    if provider == "anthropic":
+        return {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+    return {"Authorization": f"Bearer {key}"}
 
 
 def _get_fallback_model() -> str:
@@ -95,34 +173,18 @@ def _is_model_not_found(exc: Exception) -> bool:
     return any(k in msg for k in ("not found", "pull the model", "model", "404", "doesn't exist"))
 
 
-def _get_auth_headers() -> dict:
-    """Bearer token for Ollama Cloud API."""
-    api_key = _load_config().get("ollama_api_key", "") or os.environ.get("OLLAMA_API_KEY", "")
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
-
-
 # ---------------------------------------------------------------------------
 # Ollama lifecycle
 # ---------------------------------------------------------------------------
 
 def ensure_ollama_running(timeout: int = 15) -> bool:
-    """Ping or auto-launch Ollama.  Returns True if reachable."""
-    url, _   = get_llm_settings()
     provider = get_llm_provider()
+    url, _ = get_llm_settings()
 
-    if provider in ("ollama_cloud", "openai"):
-        health = f"{url}/v1/models"
-        headers = _get_auth_headers() if provider == "ollama_cloud" else {}
-        try:
-            ok = _session.get(health, headers=headers, timeout=5).status_code == 200
-            label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
-            log.info("%s %s at %s", label, "reachable" if ok else "returned non-200", url)
-            return ok
-        except Exception as e:
-            log.warning("Cannot reach %s at %s: %s", label, url, e)
-            return False
+    # Non-Ollama providers don't need Ollama running
+    if provider not in ("ollama",):
+        return True
 
-    # Native Ollama
     health = f"{url}/api/tags"
 
     def _is_up() -> bool:
@@ -136,7 +198,7 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
 
     log.info("Ollama not running — launching 'ollama serve'")
     try:
-        kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         subprocess.Popen(["ollama", "serve"], **kwargs)
@@ -159,49 +221,55 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
 
 
 def warmup_model(system_prompt: str | None = None) -> bool:
-    """
-    Pre-load the model AND prime Ollama's KV prefix cache.
-
-    Pass the *static* part of the system prompt so the prefix stays valid
-    across calls → first-token <1 s after warmup.
-    """
     url, model = get_llm_settings()
-    provider   = get_llm_provider()
+    provider = get_llm_provider()
     log.info("Warming up '%s' (%s)", model, provider)
 
-    messages: list[dict] = []
+    messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": "hi"})
 
-    if provider in ("ollama_cloud", "openai"):
-        payload: dict = {
+    if provider == "ollama":
+        payload = {
             "model": model, "messages": messages,
-            "stream": False, "max_tokens": 1,
+            "stream": False, "keep_alive": -1, "think": False,
+            "options": {"num_predict": 1, "num_ctx": 4096, "num_gpu": 99},
         }
-        headers = _get_auth_headers() if provider == "ollama_cloud" else {}
         try:
-            resp = _session.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
-            resp.raise_for_status()
-            log.info("'%s' ready.", model)
+            _session.post(f"{url}/api/chat", json=payload, timeout=180).raise_for_status()
+            log.info("'%s' loaded and KV cache primed.", model)
             return True
         except Exception as e:
             log.warning("Warmup failed (non-fatal): %s", e)
             return False
 
-    # Native Ollama — include keep_alive + GPU hint for cache priming
+    # Cloud providers — just test connectivity
+    headers = _get_auth_headers(provider)
+    if provider == "anthropic":
+        payload = {
+            "model": model, "messages": messages,
+            "max_tokens": 1,
+        }
+        try:
+            _session.post(f"{url}/v1/messages", json=payload, headers=headers, timeout=30).raise_for_status()
+            log.info("'%s' ready.", model)
+            return True
+        except Exception as e:
+            log.warning("Warmup failed: %s", e)
+            return False
+
+    # OpenAI-compatible (openai, openrouter, ollama_cloud)
     payload = {
         "model": model, "messages": messages,
-        "stream": False, "keep_alive": -1, "think": False,
-        "options": {"num_predict": 1, "num_ctx": 4096, "num_gpu": 99},
+        "stream": False, "max_tokens": 1,
     }
     try:
-        resp = _session.post(f"{url}/api/chat", json=payload, timeout=180)
-        resp.raise_for_status()
-        log.info("'%s' loaded and KV cache primed.", model)
+        _session.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=30).raise_for_status()
+        log.info("'%s' ready.", model)
         return True
     except Exception as e:
-        print(f"[LLM] Warmup failed (non-fatal): {e}")
+        log.warning("Warmup failed: %s", e)
         return False
 
 
@@ -210,7 +278,6 @@ def warmup_model(system_prompt: str | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 def _parse_openai_tool_calls(raw_tc: list) -> list[dict]:
-    """Normalise OpenAI-style tool_calls to Ollama-style format."""
     result = []
     for t in (raw_tc or []):
         args = t.get("function", {}).get("arguments", {})
@@ -221,31 +288,86 @@ def _parse_openai_tool_calls(raw_tc: list) -> list[dict]:
                 pass
         result.append({
             "id": t.get("id", ""),
-            "function": {
-                "name": t["function"]["name"],
-                "arguments": args,
-            },
+            "function": {"name": t["function"]["name"], "arguments": args},
         })
     return result
 
 
-def _parse_openai_response(data: dict) -> dict:
-    """Extract content + tool_calls from an OpenAI-format response body."""
-    choice = data.get("choices", [{}])[0]
-    msg    = choice.get("message", {})
-    return {
-        "content":    (msg.get("content") or "").strip(),
-        "tool_calls": _parse_openai_tool_calls(msg.get("tool_calls")),
-    }
+def _parse_anthropic_response(data: dict) -> dict:
+    """Parse Anthropic Messages API response."""
+    content = ""
+    tool_calls = []
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            content += block.get("text", "")
+        elif block.get("type") == "tool_use":
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": block.get("input", {}),
+                },
+            })
+    return {"content": content.strip(), "tool_calls": tool_calls}
 
 
-def _parse_ollama_response(data: dict) -> dict:
-    """Extract content + tool_calls from an Ollama native response body."""
-    msg = data.get("message", {})
-    return {
-        "content":    (msg.get("content") or "").strip(),
-        "tool_calls": msg.get("tool_calls") or [],
-    }
+# ---------------------------------------------------------------------------
+# Anthropic messages formatting
+# ---------------------------------------------------------------------------
+
+def _format_anthropic_messages(messages: list) -> tuple[str, list]:
+    """Convert OpenAI-format messages to Anthropic format.
+    Returns (system_prompt, messages_list)."""
+    system = ""
+    anthropic_msgs = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        if role == "system":
+            system = content
+        elif role == "user":
+            anthropic_msgs.append({"role": "user", "content": content})
+        elif role == "assistant":
+            entry = {"role": "assistant", "content": content}
+            if msg.get("tool_calls"):
+                # Anthropic uses content blocks for tool use
+                blocks = [{"type": "text", "text": content}] if content else []
+                for tc in msg["tool_calls"]:
+                    fn = tc.get("function", {})
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "input": fn.get("arguments", {}),
+                    })
+                entry["content"] = blocks
+            anthropic_msgs.append(entry)
+        elif role == "tool":
+            anthropic_msgs.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": content,
+                }],
+            })
+
+    return system, anthropic_msgs
+
+
+def _convert_tools_to_anthropic(tools: list) -> list:
+    """Convert OpenAI-format tools to Anthropic format."""
+    anthropic_tools = []
+    for t in tools:
+        fn = t.get("function", {})
+        anthropic_tools.append({
+            "name": fn.get("name", ""),
+            "description": fn.get("description", ""),
+            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+        })
+    return anthropic_tools
 
 
 # ---------------------------------------------------------------------------
@@ -254,35 +376,52 @@ def _parse_ollama_response(data: dict) -> dict:
 
 def call_llm(
     messages: list,
-    tools:    list | None = None,
-    timeout:  int = 120,
+    tools: list | None = None,
+    timeout: int = 120,
 ) -> dict:
-    """
-    Non-streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible.
-
-    Returns: {"content": str, "tool_calls": list}
-    """
     url, model = get_llm_settings()
-    provider   = get_llm_provider()
-    endpoint   = f"{url}/v1/chat/completions" if provider != "ollama" else f"{url}/api/chat"
-    headers    = _get_auth_headers() if provider == "ollama_cloud" else {}
+    provider = get_llm_provider()
+    headers = _get_auth_headers(provider)
 
-    if provider in ("ollama_cloud", "openai"):
-        payload: dict = {
-            "model": model, "messages": messages,
-            "stream": False, "max_tokens": 150,
+    # ── Anthropic ─────────────────────────────────────────────────────────
+    if provider == "anthropic":
+        system, anthropic_msgs = _format_anthropic_messages(messages)
+        payload = {
+            "model": model,
+            "messages": anthropic_msgs,
+            "max_tokens": 500,
+            "stream": False,
         }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = _convert_tools_to_anthropic(tools)
+        try:
+            resp = _session.post(f"{url}/v1/messages", json=payload, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return _parse_anthropic_response(resp.json())
+        except Exception as e:
+            raise RuntimeError(f"Anthropic API error: {e}") from e
+
+    # ── OpenAI / OpenRouter / Ollama Cloud ────────────────────────────────
+    if provider in ("openai", "openrouter", "ollama_cloud"):
+        payload = {"model": model, "messages": messages, "stream": False, "max_tokens": 500}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         try:
-            resp = _session.post(endpoint, json=payload, headers=headers, timeout=timeout)
+            resp = _session.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
-            return _parse_openai_response(resp.json())
+            data = resp.json()
+            msg = data.get("choices", [{}])[0].get("message", {})
+            return {
+                "content": (msg.get("content") or "").strip(),
+                "tool_calls": _parse_openai_tool_calls(msg.get("tool_calls")),
+            }
         except Exception as e:
-            raise RuntimeError(f"OpenAI-compatible LLM call failed: {e}") from e
+            raise RuntimeError(f"{provider} API error: {e}") from e
 
-    # Native Ollama
+    # ── Ollama (local) ────────────────────────────────────────────────────
     payload = {
         "model": model, "messages": messages,
         "stream": False, "keep_alive": -1, "think": False,
@@ -290,131 +429,47 @@ def call_llm(
     }
     if tools:
         payload["tools"] = tools
-
     try:
-        resp = _session.post(endpoint, json=payload, timeout=timeout)
+        resp = _session.post(f"{url}/api/chat", json=payload, timeout=timeout)
         resp.raise_for_status()
-        return _parse_ollama_response(resp.json())
-    except requests.exceptions.ConnectionError as e:
-        log.warning("ConnectionError — trying to restart Ollama: %s", e)
+        msg = resp.json().get("message", {})
+        return {"content": (msg.get("content") or "").strip(), "tool_calls": msg.get("tool_calls") or []}
+    except requests.exceptions.ConnectionError:
         if ensure_ollama_running():
-            try:
-                resp = _session.post(endpoint, json=payload, timeout=timeout)
-                resp.raise_for_status()
-                return _parse_ollama_response(resp.json())
-            except Exception:
-                pass
-        raise RuntimeError(
-            f"Cannot connect to Ollama at {url}. "
-            "Make sure Ollama is installed and run: ollama serve"
-        ) from None
-    except requests.exceptions.Timeout:
-        raise RuntimeError("Ollama request timed out after 120 s.") from None
-    except requests.exceptions.HTTPError as e:
-        log.error("HTTPError: %s — %s", e.response.status_code, e.response.text[:200])
-        raise RuntimeError(f"Ollama HTTP error: {e.response.status_code}") from e
+            resp = _session.post(f"{url}/api/chat", json=payload, timeout=timeout)
+            resp.raise_for_status()
+            msg = resp.json().get("message", {})
+            return {"content": (msg.get("content") or "").strip(), "tool_calls": msg.get("tool_calls") or []}
+        raise RuntimeError(f"Cannot connect to Ollama at {url}.")
     except Exception as e:
-        log.error("Unexpected error: %s: %s", type(e).__name__, e)
-        raise RuntimeError(f"LLM call failed: {e}") from e
+        raise RuntimeError(f"Ollama error: {e}") from e
 
 
-def call_llm_text(
-    prompt:  str,
-    system:  str | None = None,
-    model:   str | None = None,
-    timeout: int = 120,
-) -> str:
-    """Simple text-only generation (no tools). Used by planner, executor, etc."""
+def call_llm_text(prompt: str, system: str | None = None, model: str | None = None, timeout: int = 120) -> str:
     url, default_model = get_llm_settings()
     provider = get_llm_provider()
-    m        = model or default_model
+    m = model or default_model
 
-    messages: list[dict] = []
+    messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    # Check cache first
-    from core.cache import cached_llm_call, cache_llm_result
-    cached = cached_llm_call(messages, model=m)
-    if cached is not None:
-        log.debug("Cache hit for prompt: %s", prompt[:50])
-        return cached.get("content", "")
-
-    if provider in ("ollama_cloud", "openai"):
-        endpoint = f"{url}/v1/chat/completions"
-        headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
-        payload  = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
-        try:
-            resp = _session.post(endpoint, json=payload, headers=headers, timeout=timeout)
-            resp.raise_for_status()
-            result = _parse_openai_response(resp.json())
-            cache_llm_result(messages, result, model=m)
-            return result["content"]
-        except Exception as e:
-            raise RuntimeError(f"OpenAI-compatible text call failed: {e}") from e
-
-    # Native Ollama
-    endpoint = f"{url}/api/chat"
-    payload  = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "think": False, "options": {"num_predict": 600, "num_ctx": 4096}}
-
-    try:
-        resp = _session.post(endpoint, json=payload, timeout=timeout)
-        resp.raise_for_status()
-        result = _parse_ollama_response(resp.json())
-        cache_llm_result(messages, result, model=m)
-        return result["content"]
-    except requests.exceptions.ConnectionError:
-        if ensure_ollama_running():
-            try:
-                resp = _session.post(endpoint, json=payload, timeout=timeout)
-                resp.raise_for_status()
-                return _parse_ollama_response(resp.json())["content"]
-            except Exception:
-                pass
-        raise RuntimeError(
-            f"Cannot connect to Ollama at {url}. "
-            "Make sure Ollama is installed and run: ollama serve"
-        )
-    except Exception as e:
-        fb = _get_fallback_model()
-        if fb and fb != m and _is_model_not_found(e):
-            log.warning("Primary model '%s' not found — retrying with fallback '%s'", m, fb)
-            payload["model"] = fb
-            try:
-                resp = _session.post(endpoint, json=payload, timeout=timeout)
-                resp.raise_for_status()
-                return _parse_ollama_response(resp.json())["content"]
-            except Exception as fe:
-                raise RuntimeError(f"LLM fallback also failed: {fe}") from fe
-        raise RuntimeError(f"LLM text call failed: {e}") from e
+    result = call_llm(messages, timeout=timeout)
+    return result.get("content", "")
 
 
 # ---------------------------------------------------------------------------
-# Streaming — shared SSE parser (used by Ollama Cloud + OpenAI-compatible)
+# Streaming
 # ---------------------------------------------------------------------------
 
-def _stream_sse(
-    url:      str,
-    endpoint: str,
-    payload:  dict,
-    headers:  dict,
-    timeout:  int,
-    label:    str,
-    error_msg: str,
-) -> Generator[dict, None, None]:
-    """
-    Shared SSE streaming parser for OpenAI-compatible endpoints.
-
-    Yields sentence events and a final 'done' event with content + tool_calls.
-    """
+def _stream_sse(url, endpoint, payload, headers, timeout, provider, label):
     full_content = ""
-    buf          = ""
-    tc_fragments: dict[int, dict] = {}
+    buf = ""
+    tc_fragments: dict = {}
 
     with _session.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
         resp.raise_for_status()
-
         for raw in resp.iter_lines():
             if not raw:
                 continue
@@ -430,23 +485,20 @@ def _stream_sse(
                 continue
 
             choice = chunk.get("choices", [{}])[0]
-            delta  = choice.get("delta", {})
-            text   = delta.get("content") or ""
-
+            delta = choice.get("delta", {})
+            text = delta.get("content") or ""
             full_content += text
-            buf          += text
+            buf += text
 
-            # Yield complete sentences
             while True:
                 m = _SENT_END.search(buf)
                 if not m:
                     break
-                sentence = buf[: m.start() + 1].strip()
-                buf      = buf[m.end():]
+                sentence = buf[:m.start() + 1].strip()
+                buf = buf[m.end():]
                 if sentence:
                     yield {"type": "sentence", "text": sentence}
 
-            # Accumulate streaming tool-call fragments
             for tc in (delta.get("tool_calls") or []):
                 idx = tc.get("index", 0)
                 if idx not in tc_fragments:
@@ -454,7 +506,7 @@ def _stream_sse(
                 frag = tc_fragments[idx]
                 frag["id"] = frag["id"] or tc.get("id", "")
                 fn = tc.get("function", {})
-                frag["function"]["name"]      += fn.get("name") or ""
+                frag["function"]["name"] += fn.get("name") or ""
                 frag["function"]["arguments"] += fn.get("arguments") or ""
 
             finish = choice.get("finish_reason")
@@ -465,57 +517,107 @@ def _stream_sse(
         yield {"type": "sentence", "text": buf.strip()}
 
     tool_calls = _parse_openai_tool_calls([
-        {"id": frag["id"], "function": {"name": frag["function"]["name"], "arguments": frag["function"]["arguments"]}}
-        for frag in (tc_fragments[idx] for idx in sorted(tc_fragments))
+        {"id": f["id"], "function": {"name": f["function"]["name"], "arguments": f["function"]["arguments"]}}
+        for f in (tc_fragments[i] for i in sorted(tc_fragments))
     ])
+    yield {"type": "done", "content": full_content.strip(), "tool_calls": tool_calls}
 
-    yield {
-        "type":       "done",
-        "content":    full_content.strip(),
-        "tool_calls": tool_calls,
-    }
+
+def _stream_anthropic(url, payload, headers, timeout):
+    """Stream Anthropic Messages API."""
+    full_content = ""
+    buf = ""
+    tool_calls = []
+
+    with _session.post(f"{url}/v1/messages", json=payload, headers=headers, timeout=timeout, stream=True) as resp:
+        resp.raise_for_status()
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            etype = event.get("type", "")
+
+            if etype == "content_block_delta":
+                delta = event.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text", "")
+                    full_content += text
+                    buf += text
+                    while True:
+                        m = _SENT_END.search(buf)
+                        if not m:
+                            break
+                        sentence = buf[:m.start() + 1].strip()
+                        buf = buf[m.end():]
+                        if sentence:
+                            yield {"type": "sentence", "text": sentence}
+                elif delta.get("type") == "input_json_delta":
+                    # Tool use input streaming — accumulate
+                    pass
+
+            elif etype == "content_block_start":
+                block = event.get("content_block", {})
+                if block.get("type") == "tool_use":
+                    tool_calls.append({
+                        "id": block.get("id", ""),
+                        "function": {"name": block.get("name", ""), "arguments": block.get("input", {})},
+                    })
+
+            elif etype == "message_stop":
+                break
+
+    if buf.strip():
+        yield {"type": "sentence", "text": buf.strip()}
+    yield {"type": "done", "content": full_content.strip(), "tool_calls": tool_calls}
 
 
 def call_llm_stream(
     messages: list,
-    tools:    list | None = None,
-    timeout:  int = 120,
+    tools: list | None = None,
+    timeout: int = 120,
 ) -> Generator[dict, None, None]:
-    """
-    Streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible.
-
-    Yields:
-        {"type": "sentence", "text": str}          — each complete sentence
-        {"type": "done", "content": str, "tool_calls": list}  — stream end
-    """
     url, model = get_llm_settings()
-    provider   = get_llm_provider()
+    provider = get_llm_provider()
+    headers = _get_auth_headers(provider)
 
-    if provider in ("ollama_cloud", "openai"):
-        endpoint = f"{url}/v1/chat/completions"
-        headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
-        payload: dict = {
-            "model": model, "messages": messages,
-            "stream": True, "max_tokens": 150,
+    # ── Anthropic ─────────────────────────────────────────────────────────
+    if provider == "anthropic":
+        system, anthropic_msgs = _format_anthropic_messages(messages)
+        payload = {
+            "model": model, "messages": anthropic_msgs,
+            "max_tokens": 500, "stream": True,
         }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = _convert_tools_to_anthropic(tools)
+        try:
+            yield from _stream_anthropic(url, payload, headers, timeout)
+        except Exception as e:
+            raise RuntimeError(f"Anthropic stream error: {e}") from e
+        return
+
+    # ── OpenAI / OpenRouter / Ollama Cloud ────────────────────────────────
+    if provider in ("openai", "openrouter", "ollama_cloud"):
+        payload = {"model": model, "messages": messages, "stream": True, "max_tokens": 500}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         try:
-            yield from _stream_sse(url, endpoint, payload, headers, timeout, provider, provider)
-        except requests.exceptions.ConnectionError:
-            label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
-            raise RuntimeError(f"Cannot reach {label} at {url}.")
-        except requests.exceptions.Timeout:
-            raise RuntimeError(f"{provider} stream timed out.")
-        except requests.exceptions.HTTPError as e:
-            raise RuntimeError(f"{provider} HTTP error: {e.response.status_code}")
+            yield from _stream_sse(url, f"{url}/v1/chat/completions", payload, headers, timeout, provider, provider)
         except Exception as e:
-            raise RuntimeError(f"{provider} stream failed: {e}")
+            raise RuntimeError(f"{provider} stream error: {e}") from e
         return
 
-    # Native Ollama — different wire format (JSON lines, not SSE)
-    endpoint = f"{url}/api/chat"
+    # ── Ollama (local) ────────────────────────────────────────────────────
     payload = {
         "model": model, "messages": messages,
         "stream": True, "keep_alive": -1, "think": False,
@@ -524,13 +626,12 @@ def call_llm_stream(
     if tools:
         payload["tools"] = tools
 
-    def _do_native_stream() -> Generator[dict, None, None]:
-        with _session.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
+    def _do_native_stream():
+        with _session.post(f"{url}/api/chat", json=payload, timeout=timeout, stream=True) as resp:
             resp.raise_for_status()
             full_content = ""
-            tool_calls:  list = []
-            buf          = ""
-
+            tool_calls = []
+            buf = ""
             for raw in resp.iter_lines():
                 if not raw:
                     continue
@@ -538,50 +639,33 @@ def call_llm_stream(
                     chunk = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-
-                msg   = chunk.get("message", {})
+                msg = chunk.get("message", {})
                 delta = msg.get("content") or ""
                 full_content += delta
-                buf          += delta
-
+                buf += delta
                 while True:
                     m = _SENT_END.search(buf)
                     if not m:
                         break
-                    sentence = buf[: m.start() + 1].strip()
-                    buf      = buf[m.end():]
+                    sentence = buf[:m.start() + 1].strip()
+                    buf = buf[m.end():]
                     if sentence:
                         yield {"type": "sentence", "text": sentence}
-
                 tc = msg.get("tool_calls")
                 if tc:
                     tool_calls.extend(tc)
-
                 if chunk.get("done"):
                     if buf.strip():
                         yield {"type": "sentence", "text": buf.strip()}
-                    yield {
-                        "type":       "done",
-                        "content":    full_content.strip(),
-                        "tool_calls": tool_calls,
-                    }
+                    yield {"type": "done", "content": full_content.strip(), "tool_calls": tool_calls}
                     return
 
     try:
         yield from _do_native_stream()
-    except requests.exceptions.ConnectionError as e:
-        log.warning("Stream ConnectionError — trying to restart Ollama: %s", e)
+    except requests.exceptions.ConnectionError:
         if ensure_ollama_running():
             yield from _do_native_stream()
             return
-        raise RuntimeError(
-            f"Cannot connect to Ollama at {url}. "
-            "Make sure Ollama is installed and run: ollama serve"
-        )
-    except requests.exceptions.Timeout:
-        raise RuntimeError("Ollama stream timed out.")
-    except requests.exceptions.HTTPError as e:
-        raise RuntimeError(f"Ollama HTTP error: {e.response.status_code}")
+        raise RuntimeError(f"Cannot connect to Ollama at {url}.")
     except Exception as e:
-        log.error("Stream error: %s: %s", type(e).__name__, e)
-        raise RuntimeError(f"LLM stream failed: {e}")
+        raise RuntimeError(f"Ollama stream error: {e}")

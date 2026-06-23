@@ -8,94 +8,99 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.llm_client import (
-    _parse_openai_response,
-    _parse_ollama_response,
     _parse_openai_tool_calls,
+    _parse_anthropic_response,
     _is_model_not_found,
     _SENT_END,
+    get_llm_provider,
+    PROVIDER_CONFIGS,
+    _format_anthropic_messages,
+    _convert_tools_to_anthropic,
 )
+
+
+# ── Provider configs ──────────────────────────────────────────────────────
+
+def test_providers_exist():
+    assert "ollama" in PROVIDER_CONFIGS
+    assert "openai" in PROVIDER_CONFIGS
+    assert "anthropic" in PROVIDER_CONFIGS
+    assert "openrouter" in PROVIDER_CONFIGS
+
+
+def test_provider_config_structure():
+    for name, config in PROVIDER_CONFIGS.items():
+        assert "name" in config
+        assert "url" in config
+        assert "models" in config
+        assert "requires_key" in config
 
 
 # ── Response parsing ──────────────────────────────────────────────────────
 
-def test_parse_openai_response_basic():
+def test_parse_anthropic_response_text():
     data = {
-        "choices": [{
-            "message": {
-                "content": "Hello, world!",
-                "tool_calls": None,
-            }
-        }]
+        "content": [{"type": "text", "text": "Hello, world!"}],
+        "stop_reason": "end_turn",
     }
-    result = _parse_openai_response(data)
+    result = _parse_anthropic_response(data)
     assert result["content"] == "Hello, world!"
     assert result["tool_calls"] == []
 
 
-def test_parse_openai_response_with_tool_calls():
+def test_parse_anthropic_response_tool_use():
     data = {
-        "choices": [{
-            "message": {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_123",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query": "test"}',
-                        },
-                    }
-                ],
-            }
-        }]
+        "content": [
+            {"type": "text", "text": "Let me check."},
+            {"type": "tool_use", "id": "tc_1", "name": "weather_report", "input": {"city": "Tokyo"}},
+        ],
     }
-    result = _parse_openai_response(data)
+    result = _parse_anthropic_response(data)
+    assert result["content"] == "Let me check."
     assert len(result["tool_calls"]) == 1
-    tc = result["tool_calls"][0]
-    assert tc["id"] == "call_123"
-    assert tc["function"]["name"] == "web_search"
-    assert tc["function"]["arguments"] == {"query": "test"}
+    assert result["tool_calls"][0]["function"]["name"] == "weather_report"
 
 
 def test_parse_openai_tool_calls_string_args():
-    raw = [
-        {
-            "id": "call_1",
-            "function": {"name": "open_app", "arguments": '{"app_name": "Chrome"}'},
-        }
-    ]
+    raw = [{"id": "call_1", "function": {"name": "open_app", "arguments": '{"app_name": "Chrome"}'}}]
     result = _parse_openai_tool_calls(raw)
     assert result[0]["function"]["arguments"] == {"app_name": "Chrome"}
 
 
 def test_parse_openai_tool_calls_dict_args():
-    raw = [
-        {
-            "id": "call_2",
-            "function": {"name": "weather_report", "arguments": {"city": "Tokyo"}},
-        }
-    ]
+    raw = [{"id": "call_2", "function": {"name": "weather_report", "arguments": {"city": "Tokyo"}}}]
     result = _parse_openai_tool_calls(raw)
     assert result[0]["function"]["arguments"] == {"city": "Tokyo"}
 
 
-def test_parse_ollama_response():
-    data = {
-        "message": {
-            "content": "It's sunny today.",
-            "tool_calls": [{"function": {"name": "weather_report"}}],
-        }
-    }
-    result = _parse_ollama_response(data)
-    assert result["content"] == "It's sunny today."
-    assert len(result["tool_calls"]) == 1
+# ── Anthropic message formatting ──────────────────────────────────────────
+
+def test_format_anthropic_messages():
+    messages = [
+        {"role": "system", "content": "You are JARVIS."},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi!"},
+    ]
+    system, msgs = _format_anthropic_messages(messages)
+    assert system == "You are JARVIS."
+    assert len(msgs) == 2
+    assert msgs[0] == {"role": "user", "content": "Hello"}
+    assert msgs[1] == {"role": "assistant", "content": "Hi!"}
 
 
-def test_parse_ollama_response_empty():
-    data = {"message": {"content": ""}}
-    result = _parse_ollama_response(data)
-    assert result["content"] == ""
-    assert result["tool_calls"] == []
+def test_convert_tools_to_anthropic():
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "weather_report",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+        },
+    }]
+    result = _convert_tools_to_anthropic(tools)
+    assert len(result) == 1
+    assert result[0]["name"] == "weather_report"
+    assert result[0]["input_schema"]["type"] == "object"
 
 
 # ── Model not found detection ─────────────────────────────────────────────
