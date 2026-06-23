@@ -583,6 +583,34 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "smart_home",
+        "description": (
+            "Controls TP-Link Kasa smart home devices. "
+            "Actions: 'power_on', 'power_off', 'toggle', 'set_brightness', "
+            "'set_color', 'status', 'energy', 'info', 'discover'. "
+            "Use 'discover' to auto-find all devices on the network. "
+            "Devices are configured in api_keys.json under 'kasa_devices'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "device": {
+                    "type": "STRING",
+                    "description": "Device name or IP (not needed for 'discover')"
+                },
+                "action": {
+                    "type": "STRING",
+                    "description": "Action: power_on, power_off, toggle, set_brightness, set_color, status, energy, info, discover"
+                },
+                "value": {
+                    "type": "STRING",
+                    "description": "Value for set_brightness (1-100) or set_color (name or H,S,V)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 
