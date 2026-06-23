@@ -192,8 +192,8 @@ def warmup_model(system_prompt: str | None = None) -> bool:
     # Native Ollama — include keep_alive + GPU hint for cache priming
     payload = {
         "model": model, "messages": messages,
-        "stream": False, "keep_alive": -1,
-        "options": {"num_predict": 1, "num_gpu": 99, "num_ctx": 4096},
+        "stream": False, "keep_alive": -1, "think": False,
+        "options": {"num_predict": 1, "num_ctx": 4096, "num_gpu": 99},
     }
     try:
         resp = _session.post(f"{url}/api/chat", json=payload, timeout=180)
@@ -285,7 +285,7 @@ def call_llm(
     # Native Ollama
     payload = {
         "model": model, "messages": messages,
-        "stream": False, "keep_alive": -1,
+        "stream": False, "keep_alive": -1, "think": False,
         "options": {"num_predict": 500, "num_gpu": 99, "num_ctx": 4096},
     }
     if tools:
@@ -356,7 +356,7 @@ def call_llm_text(
 
     # Native Ollama
     endpoint = f"{url}/api/chat"
-    payload  = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600, "num_ctx": 4096}}
+    payload  = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "think": False, "options": {"num_predict": 600, "num_ctx": 4096}}
 
     try:
         resp = _session.post(endpoint, json=payload, timeout=timeout)
@@ -518,7 +518,7 @@ def call_llm_stream(
     endpoint = f"{url}/api/chat"
     payload = {
         "model": model, "messages": messages,
-        "stream": True, "keep_alive": -1,
+        "stream": True, "keep_alive": -1, "think": False,
         "options": {"num_predict": 500, "num_gpu": 99, "num_ctx": 4096},
     }
     if tools:
