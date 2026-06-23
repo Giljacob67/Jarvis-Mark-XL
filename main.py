@@ -409,6 +409,17 @@ class JarvisLocal:
         except Exception:
             pass
 
+        # Proactive suggestions
+        try:
+            from memory.suggestions import format_suggestions_for_prompt
+            from actions.location import get_location
+            loc = get_location()
+            suggestions_ctx = format_suggestions_for_prompt({"location": loc})
+            if suggestions_ctx:
+                parts.append(suggestions_ctx)
+        except Exception:
+            pass
+
         parts.append(time_ctx)
         return "\n\n".join(parts)
 
