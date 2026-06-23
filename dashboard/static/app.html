@@ -125,6 +125,8 @@
       pointer-events:none; white-space:nowrap;
     }
     #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+    .stream-text { border-right: 2px solid var(--accent); animation: blink 0.8s infinite; padding-right: 2px; }
   </style>
 </head>
 <body>
@@ -215,6 +217,9 @@
       if (m.type === 'sys')           sys(m.text);
       if (m.type === 'file_received') _onFileReceived(m);
       if (m.type === 'phone_transcription') _onPhoneTranscription(m);
+      if (m.type === 'stream')        _onStream(m);
+      if (m.type === 'tool_start')    _onToolStart(m);
+      if (m.type === 'tool_result')   _onToolResult(m);
     };
 
     function setStatus(s) {
@@ -360,6 +365,48 @@
       var d = document.createElement('div');
       d.className = 'msg msg-u';
       d.innerHTML = '<div class="lbl">Phone (' + (m.utterance || '') + ')</div>' + esc(m.text);
+      feed.appendChild(d);
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    var _streamEl = null;
+    var _streamText = '';
+    function _onStream(m) {
+      if (!_streamEl) {
+        _streamEl = document.createElement('div');
+        _streamEl.className = 'msg msg-j';
+        _streamEl.innerHTML = '<div class="lbl">Jarvis</div><span class="stream-text"></span>';
+        feed.appendChild(_streamEl);
+        _streamText = '';
+      }
+      _streamText += m.text;
+      var span = _streamEl.querySelector('.stream-text');
+      if (span) span.textContent = _streamText;
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    function _finalizeStream() {
+      if (_streamEl) {
+        var span = _streamEl.querySelector('.stream-text');
+        if (span) span.textContent = _streamText;
+        _streamEl = null;
+        _streamText = '';
+      }
+    }
+
+    function _onToolStart(m) {
+      var d = document.createElement('div');
+      d.className = 'msg msg-sys';
+      d.textContent = '\u2699\uFE0F ' + m.tool + ' ' + JSON.stringify(m.args);
+      feed.appendChild(d);
+      feed.scrollTop = feed.scrollHeight;
+      _finalizeStream();
+    }
+
+    function _onToolResult(m) {
+      var d = document.createElement('div');
+      d.className = 'msg msg-sys';
+      d.textContent = '\u2713 ' + m.tool + ': ' + m.result;
       feed.appendChild(d);
       feed.scrollTop = feed.scrollHeight;
     }

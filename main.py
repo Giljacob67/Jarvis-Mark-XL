@@ -1185,6 +1185,17 @@ class JarvisLocal:
         except Exception:
             pass
 
+    def _broadcast_dashboard(self, msg: dict) -> None:
+        """Send a message to all connected dashboard clients."""
+        if self._dashboard_server is not None:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._dashboard_server.broadcast(msg))
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # LLM processing loop
     # ------------------------------------------------------------------
@@ -1254,6 +1265,11 @@ class JarvisLocal:
                         _streamed.append(event["text"])
                         self.speak(event["text"])
                         self.ui.stream_sentence(event["text"])
+                        # Stream to dashboard in real-time
+                        self._broadcast_dashboard({
+                            "type": "stream",
+                            "text": event["text"],
+                        })
                     elif event["type"] == "done":
                         final_content    = event["content"]
                         final_tool_calls = event["tool_calls"]
@@ -1330,7 +1346,17 @@ class JarvisLocal:
 
                 tc_id = tc.get("id", "")
                 self.ui.write_log(f"SYS: ▶ {tname}")
+                self._broadcast_dashboard({
+                    "type": "tool_start",
+                    "tool": tname,
+                    "args": {k: str(v)[:100] for k, v in targs.items()},
+                })
                 result = self._execute_tool(tname, targs)
+                self._broadcast_dashboard({
+                    "type": "tool_result",
+                    "tool": tname,
+                    "result": str(result)[:200],
+                })
 
                 if result != "__SILENT__":
                     all_silent = False
