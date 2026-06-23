@@ -1163,6 +1163,17 @@ class JarvisLocal:
                 r = self._manage_routines(args)
                 return r
 
+            elif name == "analyze_image":
+                from actions.image_processor import process_image_upload
+                path = args.get("image_path", "")
+                prompt = args.get("prompt")
+                if not path and self.ui.current_file:
+                    path = self.ui.current_file
+                if not path:
+                    return "No image path provided."
+                r = process_image_upload(path, user_prompt=prompt)
+                return r
+
             elif name == "remote_control":
                 r = self._remote_control(args.get("action", "status"))
                 return r

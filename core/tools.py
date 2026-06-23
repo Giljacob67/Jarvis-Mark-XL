@@ -654,6 +654,28 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "analyze_image",
+        "description": (
+            "Analyze an image file. Describes contents, detects objects, "
+            "reads text (OCR), or answers questions about the image. "
+            "Use for screenshots, photos, documents, etc."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "image_path": {
+                    "type": "STRING",
+                    "description": "Path to the image file"
+                },
+                "prompt": {
+                    "type": "STRING",
+                    "description": "Question about the image (default: describe it)"
+                }
+            },
+            "required": ["image_path"]
+        }
+    },
 ]
 
 
