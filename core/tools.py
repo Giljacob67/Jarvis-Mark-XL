@@ -782,6 +782,18 @@ TOOL_DECLARATIONS = [
             "required": ["category", "key", "value"]
         }
     },
+    {
+        "name": "system_status",
+        "description": (
+            "Show system performance metrics, memory usage, cache stats, "
+            "and resource utilization. Use to diagnose performance issues."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+            "required": []
+        }
+    },
 ]
 
 

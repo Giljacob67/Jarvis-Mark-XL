@@ -1044,6 +1044,70 @@ class JarvisLocal:
         country = args.get("country", "")
         return set_location(city, region, country)
 
+    def _system_status(self) -> str:
+        """Show system performance metrics and resource utilization."""
+        import psutil
+        import os
+
+        proc = psutil.Process(os.getpid())
+        mem = proc.memory_info()
+
+        parts = ["=== JARVIS System Status ==="]
+
+        # Memory
+        parts.append(f"\nMemory:")
+        parts.append(f"  RSS: {mem.rss / (1024*1024):.1f} MB")
+        parts.append(f"  VMS: {mem.vms / (1024*1024):.1f} MB")
+
+        # Conversation
+        parts.append(f"\nConversation:")
+        parts.append(f"  Messages: {len(self._conversation)}")
+        parts.append(f"  Conv ID: {self._conv_id}")
+
+        # Dashboard
+        if self._dashboard_server:
+            parts.append(f"\nDashboard:")
+            parts.append(f"  URL: {self._dashboard_server.get_url()}")
+            parts.append(f"  Clients: {len(self._dashboard_server._clients)}")
+            parts.append(f"  History: {len(self._dashboard_server._history)} msgs")
+
+        # Phone mic
+        if self._phone_mic_processor and self._phone_mic_processor.is_active():
+            stats = self._phone_mic_processor.get_stats()
+            parts.append(f"\nPhone Mic:")
+            parts.append(f"  Frames: {stats['frames_processed']}")
+            parts.append(f"  Utterances: {stats['utterances_transcribed']}")
+            parts.append(f"  In speech: {stats['in_speech']}")
+
+        # Performance metrics
+        try:
+            from core.performance import perf_monitor, get_llm_cache, get_tool_cache
+            parts.append(f"\nPerformance:")
+            parts.append(f"  {perf_monitor.report()}")
+
+            llm_stats = get_llm_cache().stats()
+            parts.append(f"\nLLM Cache:")
+            parts.append(f"  Size: {llm_stats['size']}/{llm_stats['max_size']}")
+            parts.append(f"  Hit rate: {llm_stats['hit_rate']}")
+
+            tool_stats = get_tool_cache().stats()
+            parts.append(f"\nTool Cache:")
+            parts.append(f"  Size: {tool_stats['size']}/{tool_stats['max_size']}")
+            parts.append(f"  Hit rate: {tool_stats['hit_rate']}")
+        except Exception:
+            pass
+
+        # Routines
+        try:
+            from actions.routines import list_routines
+            routines = list_routines()
+            active = sum(1 for r in routines if r.get("enabled", True))
+            parts.append(f"\nRoutines: {active}/{len(routines)} active")
+        except Exception:
+            pass
+
+        return "\n".join(parts)
+
     # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
     # ------------------------------------------------------------------
@@ -1281,6 +1345,10 @@ class JarvisLocal:
                     return "Need 'key' and 'value'."
                 return learn_preference(cat, key, val)
 
+            elif name == "system_status":
+                r = self._system_status()
+                return r
+
             elif name == "remote_control":
                 r = self._remote_control(args.get("action", "status"))
                 return r
@@ -1407,9 +1475,20 @@ class JarvisLocal:
         from memory.conversation_db import add_message
         add_message(self._conv_id, "user", user_text)
 
-        MAX_HISTORY = 10
+        MAX_HISTORY = 12
         if len(self._conversation) > MAX_HISTORY:
-            self._conversation = self._conversation[-MAX_HISTORY:]
+            try:
+                from core.performance import trim_conversation
+                self._conversation = trim_conversation(self._conversation, MAX_HISTORY)
+            except Exception:
+                self._conversation = self._conversation[-MAX_HISTORY:]
+
+        # Mark activity for idle detection
+        try:
+            from core.performance import idle_detector
+            idle_detector.mark_active()
+        except Exception:
+            pass
 
         # Include semantically relevant memories from vector DB
         vector_memories = ""
