@@ -181,11 +181,11 @@ class _VADBuffer:
         self,
         sample_rate:    int   = 16_000,
         silence_sec:    float = 1.5,    # silence after last word → send to STT
-        speech_thresh:  float = 0.008,  # RMS above this = speech
-        silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
+        speech_thresh:  float = 0.001,  # RMS above this = speech (very sensitive for MacBook mic)
+        silence_thresh: float = 0.0005, # RMS below this = silence (very sensitive)
         min_speech_sec: float = 0.3,
         max_speech_sec: float = 30.0,
-        centroid_thresh: float = 1500.0,  # spectral centroid above this = voice (not noise)
+        centroid_thresh: float = 500.0,  # spectral centroid above this = voice
     ):
         self._sr             = sample_rate
         self._sil_n          = int(silence_sec * sample_rate)
