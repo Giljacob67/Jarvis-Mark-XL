@@ -264,6 +264,8 @@ class JarvisLocal:
         "jarvis", "járvis", "jarviz", "jarvys", "jarviss", "jarves", "jarvi",
         # Common Whisper misrecognitions of "Jarvis":
         "travis", "trevis", "tarvis", "jarvist", "jarvas",
+        "jervis", "jervys", "jerviss", "james", "jams",
+        "jardim", "jardin", "jarvin", "jarvins",
     ]
 
     def __init__(self, ui: JarvisUI):
@@ -443,9 +445,14 @@ class JarvisLocal:
                     with self._speaking_lock:
                         self._speaking = True
                     self.ui.set_state("SPEAKING")
+                    print(f"[TTS] Speaking: {text[:50]}...")
                     self._tts.speak(text)
+                    print(f"[TTS] Done: {text[:50]}...")
+                else:
+                    print(f"[TTS] Skipped: tts={self._tts is not None}, text={bool(text)}")
             except Exception as e:
                 print(f"[TTS] speak error: {e}")
+                import traceback; traceback.print_exc()
             finally:
                 self._tts_queue.task_done()
                 if self._tts_queue.empty():
