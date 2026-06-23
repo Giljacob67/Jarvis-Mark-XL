@@ -563,6 +563,26 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "verify_voiceprint",
+        "description": (
+            "Verify or enroll speaker identity from phone audio. "
+            "Actions: "
+            "'status' (check if voiceprint is enrolled), "
+            "'enroll' (start enrollment — speak for 5+ seconds), "
+            "'test' (test current enrollment against phone audio)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "Action: status, enroll, test"
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 

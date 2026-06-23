@@ -24,7 +24,7 @@ log = get_logger("phone_mic")
 
 class PhoneMicProcessor:
     """
-    Processes PCM16 audio from phone WebSocket → VAD → Whisper transcription.
+    Processes PCM16 audio from phone WebSocket → VAD → Speaker ID → Whisper transcription.
 
     Usage:
         processor = PhoneMicProcessor(stt_engine, on_transcription callback)
@@ -47,6 +47,8 @@ class PhoneMicProcessor:
         on_partial: Callable[[str], None] | None = None,
         on_status: Callable[[str], None] | None = None,
         broadcast_fn: Callable | None = None,
+        voiceprint_enabled: bool = False,
+        voiceprint_threshold: float = 0.75,
         silence_sec: float = 1.5,
         speech_thresh: float = 0.008,
         silence_thresh: float = 0.004,
@@ -59,6 +61,8 @@ class PhoneMicProcessor:
         self._on_partial = on_partial
         self._on_status = on_status
         self._broadcast_fn = broadcast_fn
+        self._voiceprint_enabled = voiceprint_enabled
+        self._voiceprint_threshold = voiceprint_threshold
 
         # VAD parameters
         self._sr = self.SAMPLE_RATE
@@ -177,15 +181,41 @@ class PhoneMicProcessor:
 
         return None
 
-    def _transcribe(self, audio: np.ndarray) -> str:
-        """Transcribe float32 audio via the STT engine."""
+    def _transcribe(self, audio: np.ndarray) -> tuple[str, str]:
+        """
+        Transcribe float32 audio via the STT engine.
+        Returns (text, speaker_label).
+        """
         if self._stt is None:
-            return ""
+            return "", "unknown"
+
+        speaker_label = "unknown"
+
+        # Voiceprint verification (optional)
+        if self._voiceprint_enabled:
+            try:
+                from core.diarization import is_user_speaking, is_available as dia_available
+                if dia_available():
+                    is_user = is_user_speaking(
+                        audio, self.SAMPLE_RATE, self._voiceprint_threshold
+                    )
+                    if not is_user:
+                        log.info("Voiceprint: speaker does not match enrolled user — skipping")
+                        return "", "stranger"
+                    speaker_label = "user"
+                else:
+                    speaker_label = "unknown"
+            except ImportError:
+                pass
+            except Exception as e:
+                log.warning("Voiceprint check failed: %s", e)
+
         try:
-            return self._stt.transcribe(audio)
+            text = self._stt.transcribe(audio)
+            return text, speaker_label
         except Exception as e:
             log.error("Transcription error: %s", e)
-            return ""
+            return "", speaker_label
 
     def _process_loop(self) -> None:
         """Main processing loop — reads from queue, applies VAD, transcribes."""
@@ -220,9 +250,9 @@ class PhoneMicProcessor:
                              self._utterance_count, len(utterance),
                              len(utterance) / self._sr)
 
-                    text = self._transcribe(utterance)
+                    text, speaker = self._transcribe(utterance)
                     if text and text.strip():
-                        log.info("Phone transcription: '%s'", text.strip())
+                        log.info("Phone transcription [%s]: '%s'", speaker, text.strip())
                         if self._on_transcription:
                             self._on_transcription(text.strip())
                         # Broadcast transcription event to dashboard
@@ -232,6 +262,7 @@ class PhoneMicProcessor:
                                 asyncio.ensure_future(self._broadcast_fn({
                                     "type": "phone_transcription",
                                     "text": text.strip(),
+                                    "speaker": speaker,
                                     "utterance": self._utterance_count,
                                 }))
                             except Exception:

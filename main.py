@@ -869,6 +869,42 @@ class JarvisLocal:
         # Feed into the normal message processing pipeline
         self._text_queue.put(text)
 
+    def _verify_voiceprint(self, action: str) -> str:
+        """Verify or enroll speaker identity from phone audio."""
+        action = action.lower().strip()
+
+        if action == "status":
+            try:
+                from core.diarization import _load_user_embedding
+                emb = _load_user_embedding()
+                if emb is not None:
+                    return f"Voiceprint enrolled. Embedding shape: {emb.shape}. Voiceprint verification is {'active' if self._config.get('voice_print_enabled') else 'disabled in config'}."
+                else:
+                    return "No voiceprint enrolled. Say 'enroll voiceprint' to record a voice sample."
+            except ImportError:
+                return "Voiceprint not available. Install pyannote.audio and speechbrain."
+            except Exception as e:
+                return f"Voiceprint status error: {e}"
+
+        elif action == "enroll":
+            if self._phone_mic_processor is None:
+                return "Phone mic not active. Open the dashboard and tap the mic button first."
+            # Use the existing enroll_voice tool
+            return self._enroll_voice(duration=10)
+
+        elif action == "test":
+            if self._phone_mic_processor is None:
+                return "Phone mic not active. Open the dashboard and tap the mic button first."
+            if not self._phone_mic_processor.is_active():
+                return "Phone mic is not streaming. Tap the mic button on the dashboard."
+            stats = self._phone_mic_processor.get_stats()
+            if stats["utterances_transcribed"] == 0:
+                return "No utterances captured yet. Speak into the phone mic."
+            return (f"Voiceprint test: {stats['utterances_transcribed']} utterances transcribed. "
+                    f"Check logs for speaker identification results.")
+
+        return f"Unknown verify_voiceprint action: {action}. Use: status, enroll, test"
+
     # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
     # ------------------------------------------------------------------
@@ -1074,6 +1110,10 @@ class JarvisLocal:
 
             elif name == "phone_mic":
                 r = self._phone_mic_action(args.get("action", "status"))
+                return r
+
+            elif name == "verify_voiceprint":
+                r = self._verify_voiceprint(args.get("action", "status"))
                 return r
 
             return f"Unknown tool: {name}"
@@ -1622,17 +1662,20 @@ class JarvisLocal:
                     # Start phone mic processor (transcribes phone audio via Whisper)
                     if _PHONE_MIC_AVAILABLE and self._stt is not None:
                         import dashboard.server as _ds_module
+                        _vp_enabled = self._config.get("voice_print_enabled", False)
                         self._phone_mic_processor = PhoneMicProcessor(
                             stt_engine=self._stt,
                             on_transcription=self._on_phone_transcription,
                             on_partial=lambda text: self.ui.write_log(f"PHONE (partial): {text}"),
                             on_status=lambda status: self.ui.write_log(f"SYS: {status}"),
                             broadcast_fn=self._dashboard_server.broadcast,
+                            voiceprint_enabled=_vp_enabled,
                         )
                         self._phone_mic_processor.start()
                         # Wire into dashboard server
                         _ds_module._phone_mic_processor = self._phone_mic_processor
-                        self.ui.write_log("SYS: Phone mic → Whisper transcription active")
+                        self.ui.write_log(f"SYS: Phone mic → Whisper transcription active"
+                                          f"{' (voiceprint enabled)' if _vp_enabled else ''}")
                 else:
                     # Fallback to basic Flask dashboard
                     from web.dashboard import start_web_dashboard
