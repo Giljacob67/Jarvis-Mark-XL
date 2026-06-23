@@ -47,6 +47,15 @@ _DEFAULTS = {
     "llm_fallback_model":  "",
 }
 
+# ── Connection pooling — reuse TCP connections to Ollama ─────────────────
+_session = requests.Session()
+_session.headers.update({"Connection": "keep-alive"})
+# Pre-configure adapter for connection pooling
+from requests.adapters import HTTPAdapter
+_adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=0)
+_session.mount("http://", _adapter)
+_session.mount("https://", _adapter)
+
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -105,7 +114,7 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
         health = f"{url}/v1/models"
         headers = _get_auth_headers() if provider == "ollama_cloud" else {}
         try:
-            ok = requests.get(health, headers=headers, timeout=5).status_code == 200
+            ok = _session.get(health, headers=headers, timeout=5).status_code == 200
             label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
             log.info("%s %s at %s", label, "reachable" if ok else "returned non-200", url)
             return ok
@@ -118,7 +127,7 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
 
     def _is_up() -> bool:
         try:
-            return requests.get(health, timeout=3).status_code == 200
+            return _session.get(health, timeout=3).status_code == 200
         except Exception:
             return False
 
@@ -172,7 +181,7 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         }
         headers = _get_auth_headers() if provider == "ollama_cloud" else {}
         try:
-            resp = requests.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
+            resp = _session.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
             log.info("'%s' ready.", model)
             return True
@@ -184,10 +193,10 @@ def warmup_model(system_prompt: str | None = None) -> bool:
     payload = {
         "model": model, "messages": messages,
         "stream": False, "keep_alive": -1,
-        "options": {"num_predict": 1, "num_gpu": 99},
+        "options": {"num_predict": 1, "num_gpu": 99, "num_ctx": 4096},
     }
     try:
-        resp = requests.post(f"{url}/api/chat", json=payload, timeout=180)
+        resp = _session.post(f"{url}/api/chat", json=payload, timeout=180)
         resp.raise_for_status()
         log.info("'%s' loaded and KV cache primed.", model)
         return True
@@ -267,7 +276,7 @@ def call_llm(
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         try:
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+            resp = _session.post(endpoint, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
             return _parse_openai_response(resp.json())
         except Exception as e:
@@ -277,20 +286,20 @@ def call_llm(
     payload = {
         "model": model, "messages": messages,
         "stream": False, "keep_alive": -1,
-        "options": {"num_predict": 500, "num_gpu": 99},
+        "options": {"num_predict": 500, "num_gpu": 99, "num_ctx": 4096},
     }
     if tools:
         payload["tools"] = tools
 
     try:
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
+        resp = _session.post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
         return _parse_ollama_response(resp.json())
     except requests.exceptions.ConnectionError as e:
         log.warning("ConnectionError — trying to restart Ollama: %s", e)
         if ensure_ollama_running():
             try:
-                resp = requests.post(endpoint, json=payload, timeout=timeout)
+                resp = _session.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
                 return _parse_ollama_response(resp.json())
             except Exception:
@@ -337,7 +346,7 @@ def call_llm_text(
         headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
         payload  = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
         try:
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+            resp = _session.post(endpoint, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
             result = _parse_openai_response(resp.json())
             cache_llm_result(messages, result, model=m)
@@ -347,10 +356,10 @@ def call_llm_text(
 
     # Native Ollama
     endpoint = f"{url}/api/chat"
-    payload  = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
+    payload  = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600, "num_ctx": 4096}}
 
     try:
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
+        resp = _session.post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
         result = _parse_ollama_response(resp.json())
         cache_llm_result(messages, result, model=m)
@@ -358,7 +367,7 @@ def call_llm_text(
     except requests.exceptions.ConnectionError:
         if ensure_ollama_running():
             try:
-                resp = requests.post(endpoint, json=payload, timeout=timeout)
+                resp = _session.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
                 return _parse_ollama_response(resp.json())["content"]
             except Exception:
@@ -373,7 +382,7 @@ def call_llm_text(
             log.warning("Primary model '%s' not found — retrying with fallback '%s'", m, fb)
             payload["model"] = fb
             try:
-                resp = requests.post(endpoint, json=payload, timeout=timeout)
+                resp = _session.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
                 return _parse_ollama_response(resp.json())["content"]
             except Exception as fe:
@@ -403,7 +412,7 @@ def _stream_sse(
     buf          = ""
     tc_fragments: dict[int, dict] = {}
 
-    with requests.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
+    with _session.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
         resp.raise_for_status()
 
         for raw in resp.iter_lines():
@@ -510,13 +519,13 @@ def call_llm_stream(
     payload = {
         "model": model, "messages": messages,
         "stream": True, "keep_alive": -1,
-        "options": {"num_predict": 500, "num_gpu": 99},
+        "options": {"num_predict": 500, "num_gpu": 99, "num_ctx": 4096},
     }
     if tools:
         payload["tools"] = tools
 
     def _do_native_stream() -> Generator[dict, None, None]:
-        with requests.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
+        with _session.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
             resp.raise_for_status()
             full_content = ""
             tool_calls:  list = []
