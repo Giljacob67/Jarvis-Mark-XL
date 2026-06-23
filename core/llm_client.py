@@ -42,7 +42,7 @@ _SENT_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)\s*\n')
 
 _DEFAULTS = {
     "llm_url":             "http://localhost:11434",
-    "llm_model":           "llama3.2",
+    "llm_model":           "qwen3.5:4b",
     "llm_provider":        "ollama",
     "llm_fallback_model":  "",
 }
