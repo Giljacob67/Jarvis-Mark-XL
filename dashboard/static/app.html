@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS Dashboard</title>
+  <script src="/static/crypto.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:      #07090f;
+      --surface: rgba(255,255,255,0.04);
+      --border:  rgba(255,255,255,0.07);
+      --accent:  #6366f1;
+      --adim:    rgba(99,102,241,0.14);
+      --text:    #dde3ed;
+      --muted:   #5e6a7e;
+      --green:   #22c55e;
+      --gdim:    rgba(34,197,94,0.14);
+    }
+    html, body {
+      height: 100%; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    header {
+      flex-shrink: 0; display: flex; align-items: center; gap: 10px;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      background: rgba(7,9,15,0.95);
+    }
+    .logo { font-size: 15px; font-weight: 700; letter-spacing: 6px; }
+    .logo em { color: var(--accent); font-style: normal; }
+    .pill {
+      display: flex; align-items: center; gap: 6px; padding: 4px 11px;
+      border-radius: 99px; background: var(--surface); border: 1px solid var(--border);
+      font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+      color: var(--muted); transition: all 0.3s;
+    }
+    .pill.on { background: var(--gdim); border-color: rgba(34,197,94,0.3); color: var(--green); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: background 0.3s; }
+    .pill.on .dot { background: var(--green); animation: blink 2s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .spacer { flex: 1; }
+    .enc-badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 1.5px; padding: 3px 8px;
+      border-radius: 4px; display: none;
+    }
+    .enc-badge.on  { display: block; background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25); color: var(--green); }
+    .enc-badge.off { display: block; background: rgba(255,100,100,0.08); border: 1px solid rgba(255,100,100,0.2); color: #f87171; }
+    .url { font-size: 10px; font-family: monospace; color: var(--muted); padding: 4px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+
+    main { flex: 1; overflow-y: auto; padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 10px; }
+    main::-webkit-scrollbar { width: 3px; }
+    main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.55; animation: pop 0.18s ease; }
+    @keyframes pop { from { opacity:0; transform:translateY(4px); } }
+    .msg-j   { align-self:flex-start; background:var(--adim);   border:1px solid rgba(99,102,241,0.18); border-bottom-left-radius:4px; }
+    .msg-u   { align-self:flex-end;   background:var(--surface); border:1px solid var(--border);        border-bottom-right-radius:4px; }
+    .msg-sys { align-self:center; font-size:11px; color:var(--muted); padding:2px 0; background:transparent; border:none; letter-spacing:0.3px; }
+    .lbl { font-size:9px; font-weight:700; letter-spacing:2px; text-transform:uppercase; opacity:0.45; margin-bottom:4px; }
+    .msg-j .lbl { color:var(--accent); }
+    .msg-u .lbl { color:var(--muted); text-align:right; }
+
+    .msg-file {
+      align-self: flex-end;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; border-bottom-right-radius: 4px;
+      padding: 11px 14px; display: flex; align-items: center; gap: 12px;
+      max-width: 82%; animation: pop 0.18s ease;
+    }
+    .fc-icon { font-size: 26px; flex-shrink: 0; }
+    .fc-meta { flex: 1; min-width: 0; }
+    .fc-lbl  { font-size:9px; font-weight:700; letter-spacing:2px; text-transform:uppercase; opacity:0.45; color:var(--muted); margin-bottom:4px; }
+    .fc-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fc-size { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .fc-bar-wrap { height: 3px; background: var(--border); border-radius: 2px; margin-top: 7px; overflow: hidden; }
+    .fc-bar { height: 100%; width: 0%; background: var(--accent); border-radius: 2px; transition: width 0.12s linear; }
+    .fc-status { font-size: 10px; font-weight: 700; letter-spacing: 1px; flex-shrink: 0; color: var(--muted); }
+    .fc-status.done { color: var(--green); }
+    .fc-status.err  { color: #f87171; }
+    .fc-dl { display:block; margin-top:6px; font-size:11px; color:var(--accent); text-decoration:none; font-weight:600; }
+    .fc-dl:hover { opacity: 0.8; }
+
+    footer { flex-shrink:0; padding:10px 14px; border-top:1px solid var(--border); background:rgba(7,9,15,0.95); display:flex; gap:8px; align-items:center; }
+    #inp { flex:1; padding:11px 14px; background:var(--surface); border:1.5px solid var(--border); border-radius:12px; color:var(--text); font-size:14px; outline:none; transition:border-color 0.15s; }
+    #inp:focus { border-color: var(--accent); }
+    #inp::placeholder { color: var(--muted); }
+    .btn { padding:11px 15px; border:none; border-radius:12px; font-size:11px; font-weight:700; letter-spacing:1.5px; cursor:pointer; transition:opacity 0.15s,transform 0.1s; }
+    .btn:active { transform: scale(0.96); }
+    .btn:hover  { opacity: 0.82; }
+    .btn-send { background: var(--accent); color: #fff; }
+    .btn-wake { background:var(--surface); border:1px solid var(--border); color:var(--muted); display:none; }
+    .btn-wake.show { display:block; color:var(--green); border-color:rgba(34,197,94,0.35); }
+    .btn-attach {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      padding: 11px 13px; font-size: 16px; line-height: 1; border-radius: 12px;
+      cursor: pointer; transition: opacity 0.15s, transform 0.1s; display: flex;
+      align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .btn-attach:hover  { opacity: 0.82; border-color: var(--accent); color: var(--accent); }
+    .btn-attach:active { transform: scale(0.96); }
+
+    #mic-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      padding: 11px 13px; font-size: 16px; line-height: 1; border-radius: 12px;
+      cursor: pointer; transition: opacity 0.15s, transform 0.1s, background 0.2s, border-color 0.2s;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    #mic-btn:hover  { opacity: 0.82; border-color: var(--accent); color: var(--accent); }
+    #mic-btn:active { transform: scale(0.96); }
+    #mic-btn.recording {
+      background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.45); color: #ef4444;
+      animation: mic-pulse 1s ease-in-out infinite;
+    }
+    #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
+    @keyframes mic-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.65;transform:scale(0.97)} }
+
+    #toast {
+      position:fixed; top:66px; left:50%; transform:translateX(-50%) translateY(-8px);
+      background:rgba(34,197,94,0.16); border:1px solid rgba(34,197,94,0.4);
+      color:var(--green); font-size:12px; font-weight:700; letter-spacing:1px;
+      padding:7px 18px; border-radius:99px;
+      opacity:0; transition:opacity 0.22s,transform 0.22s;
+      pointer-events:none; white-space:nowrap;
+    }
+    #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <div id="toast"></div>
+  <header>
+    <div class="logo"><em>J</em>ARVIS</div>
+    <div class="pill" id="pill"><span class="dot"></span><span id="st">Connecting</span></div>
+    <div class="enc-badge" id="enc">AES-256</div>
+    <div class="spacer"></div>
+    <div class="url">__IP__:__PORT__</div>
+  </header>
+  <main id="feed"></main>
+  <footer>
+    <input id="inp" placeholder="Send a command to JARVIS..." autocomplete="off">
+    <label class="btn-attach" for="file-inp" title="Send file">&#128206;</label>
+    <input type="file" id="file-inp" multiple accept="*/*" style="display:none">
+    <button id="mic-btn" onclick="doMic()" title="Voice command">&#127908;</button>
+    <button class="btn btn-wake" id="wake" onclick="doWake()">WAKE</button>
+    <button class="btn btn-send" onclick="doSend()">SEND</button>
+  </footer>
+
+  <script>
+    const _authToken  = sessionStorage.getItem('jarvis_token');
+    const _sessionKey = sessionStorage.getItem('jarvis_key');
+
+    if (!_authToken) {
+      location.replace('/login');
+    }
+
+    function _authHeader() { return { 'Authorization': 'Bearer ' + _authToken }; }
+    function _authFetch(url, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({}, opts.headers, _authHeader());
+      return fetch(url, opts);
+    }
+
+    // AES-256-CBC encryption (CryptoJS)
+    var _AES_SALT = 'JARVIS-DASHBOARD-v1';
+    var _aesKey = null;
+
+    function _initCrypto(key) {
+      if (typeof CryptoJS === 'undefined') return false;
+      _aesKey = CryptoJS.SHA256(key + _AES_SALT);
+      return true;
+    }
+
+    function _encrypt(plaintext) {
+      if (!_aesKey || typeof CryptoJS === 'undefined') return null;
+      try {
+        var iv  = CryptoJS.lib.WordArray.random(16);
+        var enc = CryptoJS.AES.encrypt(
+          CryptoJS.enc.Utf8.parse(plaintext), _aesKey,
+          { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
+        );
+        var ivHex = iv.toString(CryptoJS.enc.Hex);
+        var ctHex = enc.ciphertext.toString(CryptoJS.enc.Hex);
+        var hex   = ivHex + ctHex;
+        var bytes = new Uint8Array(hex.length / 2);
+        for (var i = 0; i < bytes.length; i++)
+          bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+        return btoa(String.fromCharCode.apply(null, bytes));
+      } catch(e) { return null; }
+    }
+
+    var _encReady = _sessionKey ? _initCrypto(_sessionKey) : false;
+    var encBadge  = document.getElementById('enc');
+    if (_encReady) { encBadge.className = 'enc-badge on'; }
+    else           { encBadge.className = 'enc-badge off'; encBadge.textContent = 'NO ENC'; }
+
+    // WebSocket
+    var feed  = document.getElementById('feed');
+    var pill  = document.getElementById('pill');
+    var stTxt = document.getElementById('st');
+    var wake  = document.getElementById('wake');
+
+    var _wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+    var _wsUrl   = _wsProto + '://' + location.host + '/ws?token=' + encodeURIComponent(_authToken);
+    var ws       = new WebSocket(_wsUrl);
+
+    ws.onopen    = function() { sys('Remote session active.'); toast('Connected to JARVIS'); };
+    ws.onclose   = function() { sys('Connection lost \u2014 refresh to reconnect.'); };
+    ws.onerror   = function() { sys('Connection error.'); };
+    ws.onmessage = function(e) {
+      var m = JSON.parse(e.data);
+      if (m.type === 'log')           append(m.speaker, m.text);
+      if (m.type === 'status')        setStatus(m.state);
+      if (m.type === 'wake')          sys('Wake word detected \u2014 connecting\u2026');
+      if (m.type === 'sys')           sys(m.text);
+      if (m.type === 'file_received') _onFileReceived(m);
+    };
+
+    function setStatus(s) {
+      if (s === 'active') {
+        pill.className = 'pill on'; stTxt.textContent = 'Active'; wake.classList.remove('show');
+      } else {
+        pill.className = 'pill'; stTxt.textContent = 'Sleeping'; wake.classList.add('show');
+      }
+    }
+
+    function append(speaker, text) {
+      var d = document.createElement('div');
+      if (speaker === 'jarvis') {
+        d.className = 'msg msg-j';
+        d.innerHTML = '<div class="lbl">Jarvis</div>' + esc(text);
+      } else {
+        d.className = 'msg msg-u';
+        d.innerHTML = '<div class="lbl">You</div>' + esc(text);
+      }
+      feed.appendChild(d);
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    function sys(text) {
+      var d = document.createElement('div');
+      d.className = 'msg msg-sys'; d.textContent = text;
+      feed.appendChild(d); feed.scrollTop = feed.scrollHeight;
+    }
+
+    function esc(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // File helpers
+    function _fileIcon(name) {
+      var ext = (name.split('.').pop() || '').toLowerCase();
+      if (['jpg','jpeg','png','gif','webp','heic','heif','avif','bmp','svg'].indexOf(ext) >= 0) return '\uD83D\uDDBC\uFE0F';
+      if (['mp4','mov','avi','mkv','webm','m4v','3gp'].indexOf(ext) >= 0)                       return '\uD83C\uDFAC';
+      if (['mp3','m4a','wav','flac','aac','ogg','opus'].indexOf(ext) >= 0)                      return '\uD83C\uDFB5';
+      if (['pdf'].indexOf(ext) >= 0)                                                             return '\uD83D\uDCCB';
+      if (['doc','docx','txt','md','rtf','odt'].indexOf(ext) >= 0)                              return '\uD83D\uDCDD';
+      if (['xls','xlsx','csv','ods'].indexOf(ext) >= 0)                                         return '\uD83D\uDCCA';
+      if (['ppt','pptx','odp'].indexOf(ext) >= 0)                                               return '\uD83D\uDCD1';
+      if (['zip','rar','7z','tar','gz','bz2','xz'].indexOf(ext) >= 0)                          return '\uD83D\uDCE6';
+      if (['apk','exe','dmg','deb','rpm','msi'].indexOf(ext) >= 0)                              return '\u2699\uFE0F';
+      return '\uD83D\uDCCE';
+    }
+
+    function _fmtSize(bytes) {
+      if (bytes < 1024)             return bytes + ' B';
+      if (bytes < 1024 * 1024)     return (bytes / 1024).toFixed(1) + ' KB';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+      return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    }
+
+    // File upload (phone to computer)
+    function _uploadFile(file) {
+      var id = 'fc_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+
+      var card = document.createElement('div');
+      card.className = 'msg-file';
+      card.id = id;
+      card.innerHTML =
+        '<div class="fc-icon">' + _fileIcon(file.name) + '</div>' +
+        '<div class="fc-meta">' +
+          '<div class="fc-lbl">Sending</div>' +
+          '<div class="fc-name">' + esc(file.name) + '</div>' +
+          '<div class="fc-size">' + _fmtSize(file.size) + '</div>' +
+          '<div class="fc-bar-wrap"><div class="fc-bar" id="' + id + '_bar"></div></div>' +
+        '</div>' +
+        '<div class="fc-status" id="' + id + '_st">0%</div>';
+      feed.appendChild(card);
+      feed.scrollTop = feed.scrollHeight;
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+      xhr.setRequestHeader('Authorization', 'Bearer ' + _authToken);
+
+      xhr.upload.onprogress = function(e) {
+        if (!e.lengthComputable) return;
+        var pct = Math.round(e.loaded / e.total * 100);
+        var bar = document.getElementById(id + '_bar');
+        var st  = document.getElementById(id + '_st');
+        if (bar) bar.style.width = pct + '%';
+        if (st)  st.textContent  = pct + '%';
+      };
+
+      xhr.onload = function() {
+        var bar  = document.getElementById(id + '_bar');
+        var st   = document.getElementById(id + '_st');
+        var meta = card.querySelector('.fc-meta');
+        var lbl  = card.querySelector('.fc-lbl');
+        if (xhr.status === 200) {
+          var savedName = file.name;
+          try { savedName = JSON.parse(xhr.responseText).name || file.name; } catch(ex) {}
+          var dlUrl = '/uploads/' + encodeURIComponent(savedName) + '?token=' + encodeURIComponent(_authToken);
+          if (bar)  { bar.style.width = '100%'; bar.style.background = 'var(--green)'; }
+          if (st)   { st.textContent = '\u2713'; st.className = 'fc-status done'; }
+          if (lbl)  lbl.textContent = 'Sent';
+          if (meta) meta.insertAdjacentHTML('beforeend',
+            '<a class="fc-dl" href="' + dlUrl + '" download="' + esc(savedName) + '">\u2B07 Download back</a>');
+          toast('File sent!');
+        } else {
+          var errMsg = 'Upload failed';
+          try { errMsg = JSON.parse(xhr.responseText).error || errMsg; } catch(ex) {}
+          if (bar) bar.style.background = '#f87171';
+          if (st)  { st.textContent = 'ERR'; st.className = 'fc-status err'; }
+          if (lbl) lbl.textContent = errMsg;
+        }
+      };
+
+      xhr.onerror = function() {
+        var st  = document.getElementById(id + '_st');
+        var lbl = card.querySelector('.fc-lbl');
+        if (st)  { st.textContent = 'ERR'; st.className = 'fc-status err'; }
+        if (lbl) lbl.textContent = 'Connection error';
+      };
+
+      var fd = new FormData();
+      fd.append('file', file);
+      xhr.send(fd);
+    }
+
+    function _onFileReceived(m) {
+      var dlUrl = '/uploads/' + encodeURIComponent(m.name) + '?token=' + encodeURIComponent(_authToken);
+      var card  = document.createElement('div');
+      card.className = 'msg-file';
+      card.innerHTML =
+        '<div class="fc-icon">' + _fileIcon(m.name) + '</div>' +
+        '<div class="fc-meta">' +
+          '<div class="fc-lbl">Received</div>' +
+          '<div class="fc-name">' + esc(m.name) + '</div>' +
+          '<div class="fc-size">' + _fmtSize(m.size) + '</div>' +
+          '<a class="fc-dl" href="' + dlUrl + '" download="' + esc(m.name) + '">\u2B07 Download</a>' +
+        '</div>' +
+        '<div class="fc-status done">\u2713</div>';
+      feed.appendChild(card);
+      feed.scrollTop = feed.scrollHeight;
+      toast('File received on computer!');
+    }
+
+    document.getElementById('file-inp').addEventListener('change', function () {
+      var files = this.files;
+      for (var i = 0; i < files.length; i++) _uploadFile(files[i]);
+      this.value = '';
+    });
+
+    // Commands
+    function doSend() {
+      var inp = document.getElementById('inp');
+      var txt = inp.value.trim();
+      if (!txt) return;
+      inp.value = '';
+      append('user', txt);
+      var enc  = _encrypt(txt);
+      var body = enc ? { enc: enc } : { text: txt };
+      _authFetch('/api/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    }
+
+    function doWake() {
+      sys('Sending wake signal...');
+      _authFetch('/api/wake', { method: 'POST' });
+    }
+
+    document.getElementById('inp').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+    });
+
+    // Toast
+    var _toastTimer;
+    function toast(msg) {
+      var t = document.getElementById('toast');
+      t.textContent = msg; t.classList.add('show');
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(function() { t.classList.remove('show'); }, 2800);
+    }
+
+    // Real-time Voice
+    var micBtn  = document.getElementById('mic-btn');
+    var _voiceWs  = null;
+    var _audioCtx = null;
+    var _micStm   = null;
+    var _audioNd  = null;
+
+    function _micIdle() {
+      micBtn.innerHTML = '\uD83C\uDFA4';
+      micBtn.title     = 'Voice \u2014 tap to speak';
+      micBtn.classList.remove('recording');
+    }
+
+    function _f32toPcm16(f32, srcRate) {
+      var s = f32;
+      if (srcRate !== 16000) {
+        var ratio = srcRate / 16000;
+        var len   = Math.round(f32.length / ratio);
+        s = new Float32Array(len);
+        for (var i = 0; i < len; i++)
+          s[i] = f32[Math.min(Math.round(i * ratio), f32.length - 1)];
+      }
+      var out = new Int16Array(s.length);
+      for (var i = 0; i < s.length; i++)
+        out[i] = Math.max(-32768, Math.min(32767, Math.round(s[i] * 32768)));
+      return out.buffer;
+    }
+
+    function _showVoiceSetup() {
+      if (document.getElementById('voice-setup')) return;
+      var origin = location.origin;
+      var card = document.createElement('div');
+      card.id = 'voice-setup';
+      card.style.cssText = 'align-self:stretch;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.22);border-radius:14px;padding:16px 18px;font-size:13px;line-height:1.8;animation:pop 0.18s ease';
+      card.innerHTML =
+        '<div style="font-weight:700;color:#818cf8;letter-spacing:.5px;margin-bottom:10px">\uD83C\uDFA4 One-time voice setup</div>' +
+        '<ol style="padding-left:18px;color:#8899aa;margin:0;display:flex;flex-direction:column;gap:4px">' +
+        '<li>Open a new tab \u2192 go to <span style="background:rgba(255,255,255,0.07);padding:1px 6px;border-radius:4px;font-family:monospace;font-size:12px">chrome://flags</span></li>' +
+        '<li>Search: <strong style="color:#dde3ed">Insecure origins treated as secure</strong></li>' +
+        '<li>Paste this URL into the box:<br><span id="flags-url" style="background:rgba(255,255,255,0.07);padding:2px 8px;border-radius:4px;font-family:monospace;font-size:11px;user-select:all;cursor:pointer">' + esc(origin) + '</span></li>' +
+        '<li>Set to <strong style="color:#22c55e">Enabled</strong> \u2192 tap <strong style="color:#dde3ed">Relaunch</strong></li>' +
+        '<li>Return here and tap \uD83C\uDFA4</li>' +
+        '</ol>';
+      feed.appendChild(card);
+      feed.scrollTop = feed.scrollHeight;
+      card.querySelector('#flags-url').addEventListener('click', function() {
+        if (navigator.clipboard) navigator.clipboard.writeText(origin).then(function() { toast('URL copied!'); }).catch(function() {});
+      });
+    }
+
+    function doMic() {
+      if (_voiceWs) { _stopVoice(); return; }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        _showVoiceSetup();
+        return;
+      }
+      var stream;
+      navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      }).then(function(s) {
+        stream = s;
+
+        var ctx;
+        try { ctx = new AudioContext({ sampleRate: 16000 }); }
+        catch (ex) { ctx = new AudioContext(); }
+        if (ctx.state === 'suspended') ctx.resume().then(function() {});
+
+        var wsProto2 = location.protocol === 'https:' ? 'wss' : 'ws';
+        var micWs = new WebSocket(
+          wsProto2 + '://' + location.host + '/ws/phone-audio?token=' + encodeURIComponent(_authToken)
+        );
+        micWs.binaryType = 'arraybuffer';
+
+        micWs.onopen = function() {
+          var rate = ctx.sampleRate;
+          var src  = ctx.createMediaStreamSource(stream);
+
+          var wCode = 'class J extends AudioWorkletProcessor{process(i){var c=i[0]?i[0][0]:null;if(c)this.port.postMessage(c.slice());return true;}}registerProcessor(\'j\',J);';
+          var burl = URL.createObjectURL(new Blob([wCode], { type: 'application/javascript' }));
+          ctx.audioWorklet.addModule(burl).then(function() {
+            URL.revokeObjectURL(burl);
+            var nd = new AudioWorkletNode(ctx, 'j');
+            var _pbuf = [], _plen = 0;
+            nd.port.onmessage = function(ev) {
+              var chunk = new Int16Array(_f32toPcm16(ev.data, rate));
+              _pbuf.push(chunk); _plen += chunk.length;
+              if (_plen >= 1024) {
+                var out = new Int16Array(_plen); var off = 0;
+                for (var j = 0; j < _pbuf.length; j++) { out.set(_pbuf[j], off); off += _pbuf[j].length; }
+                if (micWs.readyState === 1) micWs.send(out.buffer);
+                _pbuf = []; _plen = 0;
+              }
+            };
+            src.connect(nd);
+            _audioNd = nd;
+          }).catch(function() {
+            var sp = ctx.createScriptProcessor(4096, 1, 1);
+            sp.onaudioprocess = function(ev) {
+              if (micWs.readyState === 1) micWs.send(_f32toPcm16(ev.inputBuffer.getChannelData(0), rate));
+            };
+            src.connect(sp); sp.connect(ctx.destination);
+            _audioNd = sp;
+          });
+
+          micBtn.innerHTML = '\u23F9';
+          micBtn.title     = 'Tap to stop';
+          micBtn.classList.add('recording');
+          sys('Voice live \u2014 speak now');
+          toast('\uD83C\uDFA4 Live');
+        };
+
+        micWs.onclose = function() { _stopVoice(); };
+        micWs.onerror = function() { sys('Voice connection failed.'); _stopVoice(); };
+
+        _voiceWs  = micWs;
+        _audioCtx = ctx;
+        _micStm   = stream;
+      }).catch(function(e) {
+        sys(e.name === 'NotAllowedError'
+          ? 'Microphone denied \u2014 tap the address bar lock and allow microphone.'
+          : 'Mic error: ' + e.message);
+      });
+    }
+
+    function _stopVoice() {
+      if (_audioNd)  { try { _audioNd.disconnect(); }  catch(ex) {}; _audioNd  = null; }
+      if (_audioCtx) { try { _audioCtx.close(); }      catch(ex) {}; _audioCtx = null; }
+      if (_micStm)   { _micStm.getTracks().forEach(function(t) { t.stop(); }); _micStm = null; }
+      if (_voiceWs)  {
+        var w = _voiceWs; _voiceWs = null;
+        if (w.readyState < 2) w.close();
+      }
+      _micIdle();
+    }
+  </script>
+</body>
+</html>

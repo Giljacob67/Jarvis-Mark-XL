@@ -61,6 +61,13 @@ edge-tts              # EdgeTTS  (default, free, requires internet)
 # agentdb               # Vector memory with HNSW indexing
 # reasoningbank         # Pattern distillation & trajectory learning
 
+# ── Encrypted dashboard (installed automatically) ──────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+cryptography
+pyqrcode[pil]
+
 # ── New features (optional — installed on first use) ──────────────────────
 # python-kasa           # Smart home TP-Link Kasa (smart_home tool)
 # mediapipe             # Face authentication (face_auth_enabled=true in config)

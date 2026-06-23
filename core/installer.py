@@ -53,6 +53,14 @@ _ENHANCED: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# Encrypted dashboard packages (FastAPI + WebSocket + AES-256)
+_DASHBOARD: list[tuple[str, str]] = [
+    ("fastapi",             "fastapi"),
+    ("uvicorn",             "uvicorn[standard]"),
+    ("multipart",           "python-multipart"),
+    ("cryptography",        "cryptography"),
+]
+
 # Windows-only (pywinauto, pycaw, win10toast, comtypes)
 _WINDOWS: list[tuple[str, str]] = [
     ("comtypes",   "comtypes"),
@@ -127,6 +135,9 @@ def install_for_config(config: dict, log: Callable | None = None) -> None:
         needed += _ENHANCED.get("vector_memory", [])
     if config.get("distillation_enabled", False):
         needed += _ENHANCED.get("distillation", [])
+
+    # Encrypted dashboard (always needed for remote control)
+    needed += _DASHBOARD
 
     # Deduplicate (preserve order, key = pip name)
     seen: set[str] = set()

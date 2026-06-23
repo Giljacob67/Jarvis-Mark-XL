@@ -524,6 +524,45 @@ TOOL_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "remote_control",
+        "description": (
+            "Manages the encrypted web dashboard for remote phone control. "
+            "Actions: 'start' (start the dashboard server), 'stop' (stop it), "
+            "'status' (check if running), 'url' (get connection URL), "
+            "'qr' (generate QR code pairing link for phone), "
+            "'new_key' (generate a new 6-char pairing key)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "Action: start, stop, status, url, qr, new_key"
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "phone_mic",
+        "description": (
+            "Controls phone microphone streaming. Actions: "
+            "'status' (check if phone mic is active), "
+            "'stop' (stop phone mic stream), "
+            "'queue_size' (check how many audio frames are queued)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "Action: status, stop, queue_size"
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 

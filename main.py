@@ -132,6 +132,13 @@ CHANNELS       = 1
 
 from core.tools import TOOL_DECLARATIONS, OLLAMA_TOOLS
 
+# Encrypted dashboard (optional — auto-installed)
+try:
+    from dashboard.server import DashboardServer, _DEPS_OK as _DASHBOARD_DEPS_OK
+    _DASHBOARD_AVAILABLE = True
+except ImportError:
+    _DASHBOARD_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -271,6 +278,9 @@ class JarvisLocal:
         from memory.conversation_db import init_db, create_conversation
         init_db()
         self._conv_id = create_conversation()
+
+        # Encrypted dashboard server (lazy-initialized)
+        self._dashboard_server = None
 
         self.ui.on_text_command = self._on_text_command
 
@@ -726,6 +736,114 @@ class JarvisLocal:
             return f"Distillation error: {e}"
 
     # ------------------------------------------------------------------
+    # Encrypted dashboard + remote phone control
+    # ------------------------------------------------------------------
+
+    def _remote_control(self, action: str) -> str:
+        """Manage the encrypted web dashboard for remote phone control."""
+        if not _DASHBOARD_AVAILABLE:
+            return ("Encrypted dashboard not available. "
+                    "Install deps: pip install fastapi 'uvicorn[standard]' cryptography")
+
+        action = action.lower().strip()
+
+        if action == "start":
+            if self._dashboard_server is not None:
+                return f"Dashboard already running at {self._dashboard_server.get_url()}"
+            try:
+                self._dashboard_server = DashboardServer()
+                self._dashboard_server.set_wake_callback(
+                    lambda: self._text_queue.put("remote wake")
+                )
+
+                # Start server in background thread
+                import asyncio as _asyncio
+                def _run_server():
+                    _asyncio.run(self._dashboard_server.serve())
+                threading.Thread(target=_run_server, daemon=True).start()
+
+                url = self._dashboard_server.get_url()
+                self.ui.write_log(f"SYS: Dashboard running at {url}")
+                return f"Encrypted dashboard started at {url}. Press 'Remote Control' or say 'generate QR code' to pair your phone."
+            except Exception as e:
+                self.ui.write_log(f"ERR: Dashboard start failed: {e}")
+                return f"Dashboard start failed: {e}"
+
+        elif action == "stop":
+            if self._dashboard_server is None:
+                return "Dashboard is not running."
+            self._dashboard_server = None
+            self.ui.write_log("SYS: Dashboard stopped.")
+            return "Dashboard stopped."
+
+        elif action == "status":
+            if self._dashboard_server is None:
+                return "Dashboard is not running. Say 'start remote control' to launch it."
+            url = self._dashboard_server.get_url()
+            return f"Dashboard is running at {url}"
+
+        elif action == "url":
+            if self._dashboard_server is None:
+                return "Dashboard is not running."
+            return f"Dashboard URL: {self._dashboard_server.get_url()}"
+
+        elif action == "qr":
+            if self._dashboard_server is None:
+                # Auto-start
+                return self._remote_control("start")
+            key = self._dashboard_server.new_key()
+            url = self._dashboard_server.get_url()
+            qr_url = f"{url}/auto-login?key={key}"
+            svg = self._dashboard_server.get_qr_svg(key)
+            if svg:
+                # Save QR as SVG file for display
+                qr_path = BASE_DIR / "dashboard" / "static" / "current_qr.svg"
+                qr_path.write_text(svg, encoding="utf-8")
+                self.ui.write_log(f"SYS: QR code saved to {qr_path}")
+                return (f"QR code generated! Open {url} on your phone and scan, "
+                        f"or go to: {qr_url}\nPairing key: {key}")
+            else:
+                return (f"No QR library (pip install pyqrcode[pil]). "
+                        f"Go to: {qr_url}\nPairing key: {key}")
+
+        elif action == "new_key":
+            if self._dashboard_server is None:
+                return self._remote_control("start")
+            key = self._dashboard_server.new_key()
+            return f"New pairing key: {key}"
+
+        return f"Unknown remote_control action: {action}. Use: start, stop, status, url, qr, new_key"
+
+    def _phone_mic_action(self, action: str) -> str:
+        """Check or control phone microphone streaming status."""
+        if self._dashboard_server is None:
+            return "Dashboard not running. Start it first with remote_control."
+
+        action = action.lower().strip()
+
+        if action == "status":
+            qsize = self._dashboard_server._phone_audio_queue.qsize()
+            if qsize > 0:
+                return f"Phone mic is active. {qsize} audio frames buffered."
+            else:
+                return "Phone mic is not active. Open the dashboard on your phone and tap the mic button."
+
+        elif action == "stop":
+            # Clear the queue
+            while not self._dashboard_server._phone_audio_queue.empty():
+                try:
+                    self._dashboard_server._phone_audio_queue.get_nowait()
+                except Exception:
+                    break
+            return "Phone mic queue cleared."
+
+        elif action == "queue_size":
+            qsize = self._dashboard_server._phone_audio_queue.qsize()
+            return f"Phone audio queue: {qsize} frames"
+
+        return f"Unknown phone_mic action: {action}. Use: status, stop, queue_size"
+
+    # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
     # ------------------------------------------------------------------
 
@@ -923,6 +1041,14 @@ class JarvisLocal:
                 from actions.kasa_tool import kasa_tool
                 r = kasa_tool(parameters=args, player=self.ui)
                 return r or "Done."
+
+            elif name == "remote_control":
+                r = self._remote_control(args.get("action", "status"))
+                return r
+
+            elif name == "phone_mic":
+                r = self._phone_mic_action(args.get("action", "status"))
+                return r
 
             return f"Unknown tool: {name}"
 
@@ -1451,11 +1577,26 @@ class JarvisLocal:
             self.ui.set_state("LISTENING")
             self.ui.set_startup_status("● JARVIS online · Voice loading in background…")
 
-            # Start web dashboard
+            # Start encrypted dashboard (replaces basic Flask dashboard)
             try:
-                from web.dashboard import start_web_dashboard
-                start_web_dashboard()
-                self.ui.write_log("SYS: Web dashboard at http://localhost:5050")
+                if _DASHBOARD_AVAILABLE:
+                    self._dashboard_server = DashboardServer()
+                    self._dashboard_server.set_wake_callback(
+                        lambda: self._text_queue.put("remote wake")
+                    )
+
+                    import asyncio as _asyncio
+                    def _run_dashboard():
+                        _asyncio.run(self._dashboard_server.serve())
+                    threading.Thread(target=_run_dashboard, daemon=True).start()
+
+                    dash_url = self._dashboard_server.get_url()
+                    self.ui.write_log(f"SYS: Encrypted dashboard at {dash_url}")
+                else:
+                    # Fallback to basic Flask dashboard
+                    from web.dashboard import start_web_dashboard
+                    start_web_dashboard()
+                    self.ui.write_log("SYS: Basic web dashboard at http://localhost:5050")
             except Exception as e:
                 self.ui.write_log(f"ERR: Web dashboard — {e}")
 
