@@ -139,6 +139,13 @@ try:
 except ImportError:
     _DASHBOARD_AVAILABLE = False
 
+# Phone mic processor (optional — auto-installed)
+try:
+    from dashboard.phone_mic import PhoneMicProcessor
+    _PHONE_MIC_AVAILABLE = True
+except ImportError:
+    _PHONE_MIC_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -281,6 +288,7 @@ class JarvisLocal:
 
         # Encrypted dashboard server (lazy-initialized)
         self._dashboard_server = None
+        self._phone_mic_processor = None
 
         self.ui.on_text_command = self._on_text_command
 
@@ -822,6 +830,11 @@ class JarvisLocal:
         action = action.lower().strip()
 
         if action == "status":
+            if self._phone_mic_processor and self._phone_mic_processor.is_active():
+                stats = self._phone_mic_processor.get_stats()
+                return (f"Phone mic active. {stats['frames_processed']} frames processed, "
+                        f"{stats['utterances_transcribed']} utterances transcribed. "
+                        f"Queue: {stats['queue_size']}, In speech: {stats['in_speech']}")
             qsize = self._dashboard_server._phone_audio_queue.qsize()
             if qsize > 0:
                 return f"Phone mic is active. {qsize} audio frames buffered."
@@ -829,19 +842,32 @@ class JarvisLocal:
                 return "Phone mic is not active. Open the dashboard on your phone and tap the mic button."
 
         elif action == "stop":
+            if self._phone_mic_processor:
+                self._phone_mic_processor.stop()
             # Clear the queue
             while not self._dashboard_server._phone_audio_queue.empty():
                 try:
                     self._dashboard_server._phone_audio_queue.get_nowait()
                 except Exception:
                     break
-            return "Phone mic queue cleared."
+            return "Phone mic stopped."
 
         elif action == "queue_size":
             qsize = self._dashboard_server._phone_audio_queue.qsize()
             return f"Phone audio queue: {qsize} frames"
 
         return f"Unknown phone_mic action: {action}. Use: status, stop, queue_size"
+
+    def _on_phone_transcription(self, text: str) -> None:
+        """Callback: receive transcribed text from phone mic and process it."""
+        if not text or not text.strip():
+            return
+        text = text.strip()
+        self.ui.write_log(f"PHONE: '{text}'")
+        self.ui.add_history("user", f"[Phone] {text}")
+
+        # Feed into the normal message processing pipeline
+        self._text_queue.put(text)
 
     # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
@@ -1592,6 +1618,21 @@ class JarvisLocal:
 
                     dash_url = self._dashboard_server.get_url()
                     self.ui.write_log(f"SYS: Encrypted dashboard at {dash_url}")
+
+                    # Start phone mic processor (transcribes phone audio via Whisper)
+                    if _PHONE_MIC_AVAILABLE and self._stt is not None:
+                        import dashboard.server as _ds_module
+                        self._phone_mic_processor = PhoneMicProcessor(
+                            stt_engine=self._stt,
+                            on_transcription=self._on_phone_transcription,
+                            on_partial=lambda text: self.ui.write_log(f"PHONE (partial): {text}"),
+                            on_status=lambda status: self.ui.write_log(f"SYS: {status}"),
+                            broadcast_fn=self._dashboard_server.broadcast,
+                        )
+                        self._phone_mic_processor.start()
+                        # Wire into dashboard server
+                        _ds_module._phone_mic_processor = self._phone_mic_processor
+                        self.ui.write_log("SYS: Phone mic → Whisper transcription active")
                 else:
                     # Fallback to basic Flask dashboard
                     from web.dashboard import start_web_dashboard

@@ -56,6 +56,9 @@ from core.logger import get_logger
 
 log = get_logger("dashboard")
 
+# Phone mic processor (lazy import to avoid circular deps)
+_phone_mic_processor = None
+
 STATIC_DIR = Path(__file__).parent / "static"
 PORT = 8000
 MAX_UPLOAD_MB = 500
@@ -603,9 +606,16 @@ class DashboardServer:
             asyncio.create_task(self.broadcast(
                 {"type": "sys", "text": "Phone microphone live."}
             ))
+
+            # Feed audio to processor if available
+            global _phone_mic_processor
             try:
                 while True:
                     data = await websocket.receive_bytes()
+                    # Feed to processor (transcribes and calls back)
+                    if _phone_mic_processor is not None:
+                        _phone_mic_processor.feed_audio(data)
+                    # Also keep raw frames in queue for backward compat
                     try:
                         self._phone_audio_queue.put_nowait(
                             {"data": data, "mime_type": "audio/pcm"}

@@ -214,6 +214,7 @@
       if (m.type === 'wake')          sys('Wake word detected \u2014 connecting\u2026');
       if (m.type === 'sys')           sys(m.text);
       if (m.type === 'file_received') _onFileReceived(m);
+      if (m.type === 'phone_transcription') _onPhoneTranscription(m);
     };
 
     function setStatus(s) {
@@ -353,6 +354,14 @@
       feed.appendChild(card);
       feed.scrollTop = feed.scrollHeight;
       toast('File received on computer!');
+    }
+
+    function _onPhoneTranscription(m) {
+      var d = document.createElement('div');
+      d.className = 'msg msg-u';
+      d.innerHTML = '<div class="lbl">Phone (' + (m.utterance || '') + ')</div>' + esc(m.text);
+      feed.appendChild(d);
+      feed.scrollTop = feed.scrollHeight;
     }
 
     document.getElementById('file-inp').addEventListener('change', function () {
