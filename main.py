@@ -130,7 +130,7 @@ CHANNELS       = 1
 # Tool declarations — imported from canonical source
 # ---------------------------------------------------------------------------
 
-from core.tools import TOOL_DECLARATIONS, OLLAMA_TOOLS
+from core.tools import TOOL_DECLARATIONS, OLLAMA_TOOLS, CORE_TOOLS
 
 # Encrypted dashboard (optional — auto-installed)
 try:
@@ -1519,7 +1519,7 @@ class JarvisLocal:
             _streamed: list[str] = []
 
             try:
-                for event in call_llm_stream(messages, OLLAMA_TOOLS):
+                for event in call_llm_stream(messages, CORE_TOOLS):
                     if event["type"] == "sentence":
                         # ── Overlap TTS with LLM generation ─────────────────
                         # Queue this sentence immediately; the TTS worker

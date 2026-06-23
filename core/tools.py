@@ -847,6 +847,14 @@ def _to_ollama_tools(decls: list) -> list:
 
 OLLAMA_TOOLS = _to_ollama_tools(TOOL_DECLARATIONS)
 
+# Core tools — always sent to the LLM (15 essential tools)
+CORE_TOOL_NAMES = [
+    "open_app", "web_search", "weather_report", "send_message", "reminder",
+    "youtube_video", "computer_settings", "file_controller", "code_helper",
+    "computer_control", "save_memory", "notes", "calculator", "timer",
+    "shutdown_jarvis",
+]
+CORE_TOOLS = _to_ollama_tools([d for d in TOOL_DECLARATIONS if d["name"] in CORE_TOOL_NAMES])
 
 # Flat list of canonical tool names — the authority other modules validate against.
 TOOL_NAMES = [d["name"] for d in TOOL_DECLARATIONS]

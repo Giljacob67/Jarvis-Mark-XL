@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.tools import TOOL_DECLARATIONS, OLLAMA_TOOLS, TOOL_NAMES, _to_ollama_tools
+from core.tools import TOOL_DECLARATIONS, OLLAMA_TOOLS, CORE_TOOLS, TOOL_NAMES, _to_ollama_tools
 
 
 def test_tool_declarations_count():
@@ -70,6 +70,15 @@ def test_ollama_type_conversion():
 
 def test_tool_names_matches_declarations():
     assert TOOL_NAMES == [d["name"] for d in TOOL_DECLARATIONS]
+
+
+def test_core_tools_subset():
+    """CORE_TOOLS should be a subset of OLLAMA_TOOLS."""
+    assert len(CORE_TOOLS) < len(OLLAMA_TOOLS)
+    assert len(CORE_TOOLS) >= 10
+    core_names = {t["function"]["name"] for t in CORE_TOOLS}
+    all_names = {t["function"]["name"] for t in OLLAMA_TOOLS}
+    assert core_names.issubset(all_names)
 
 
 def test_wake_word_tool_exists():
