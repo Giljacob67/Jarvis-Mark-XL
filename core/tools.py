@@ -676,6 +676,69 @@ TOOL_DECLARATIONS = [
             "required": ["image_path"]
         }
     },
+    {
+        "name": "manage_calendar",
+        "description": (
+            "Manage calendar events. Actions: "
+            "'upcoming' (events in next N hours), 'add' (create event), "
+            "'remove' (delete event), 'list' (all events)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "Action: upcoming, add, remove, list"
+                },
+                "title": {
+                    "type": "STRING",
+                    "description": "Event title (for add)"
+                },
+                "time": {
+                    "type": "STRING",
+                    "description": "Event time in ISO format (for add)"
+                },
+                "description": {
+                    "type": "STRING",
+                    "description": "Event description (for add)"
+                },
+                "hours": {
+                    "type": "INTEGER",
+                    "description": "Hours ahead to check (for upcoming, default: 24)"
+                },
+                "event_id": {
+                    "type": "STRING",
+                    "description": "Event ID or title (for remove)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "set_location",
+        "description": (
+            "Set or get the user's location for context-aware responses. "
+            "Provides timezone, local time, and geographic context."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "city": {
+                    "type": "STRING",
+                    "description": "City name (empty to get current location)"
+                },
+                "region": {
+                    "type": "STRING",
+                    "description": "Region/state"
+                },
+                "country": {
+                    "type": "STRING",
+                    "description": "Country"
+                }
+            },
+            "required": []
+        }
+    },
 ]
 
 

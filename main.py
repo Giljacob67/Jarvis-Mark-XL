@@ -390,6 +390,16 @@ class JarvisLocal:
         parts = [sys_p]
         if mem_str:
             parts.append(mem_str)
+
+        # Location context
+        try:
+            from actions.location import get_context_string
+            loc_ctx = get_context_string()
+            if loc_ctx:
+                parts.append(f"[LOCATION]\n{loc_ctx}")
+        except Exception:
+            pass
+
         parts.append(time_ctx)
         return "\n\n".join(parts)
 
@@ -960,6 +970,60 @@ class JarvisLocal:
 
         return f"Unknown action: {action}. Use: create, list, enable, disable, delete"
 
+    def _manage_calendar(self, args: dict) -> str:
+        """Manage calendar events."""
+        from actions.calendar_tool import get_upcoming, add_event, remove_event, list_events
+
+        action = args.get("action", "upcoming").lower().strip()
+
+        if action == "upcoming":
+            hours = args.get("hours", 24)
+            events = get_upcoming(hours=hours)
+            if not events:
+                return f"No events in the next {hours} hours."
+            lines = [f"Upcoming events ({len(events)}):"]
+            for e in events:
+                lines.append(f"  {e.get('time', '?')} — {e.get('title', 'Untitled')}")
+            return "\n".join(lines)
+
+        elif action == "add":
+            title = args.get("title", "")
+            time_str = args.get("time", "")
+            if not title or not time_str:
+                return "Need 'title' and 'time' for add."
+            desc = args.get("description", "")
+            return add_event(title, time_str, desc)
+
+        elif action == "remove":
+            eid = args.get("event_id", "")
+            if not eid:
+                return "Need 'event_id' for remove."
+            return remove_event(eid)
+
+        elif action == "list":
+            events = list_events()
+            if not events:
+                return "No events scheduled."
+            lines = [f"Scheduled events ({len(events)}):"]
+            for e in events:
+                lines.append(f"  {e.get('time', '?')} — {e.get('title', 'Untitled')}")
+            return "\n".join(lines)
+
+        return f"Unknown action: {action}. Use: upcoming, add, remove, list"
+
+    def _set_location(self, args: dict) -> str:
+        """Set or get location for context-aware responses."""
+        from actions.location import get_location, set_location, get_context_string
+
+        city = args.get("city", "").strip()
+        if not city:
+            loc = get_location()
+            return get_context_string()
+
+        region = args.get("region", "")
+        country = args.get("country", "")
+        return set_location(city, region, country)
+
     # ------------------------------------------------------------------
     # Tool execution (routing unchanged from original)
     # ------------------------------------------------------------------
@@ -1172,6 +1236,14 @@ class JarvisLocal:
                 if not path:
                     return "No image path provided."
                 r = process_image_upload(path, user_prompt=prompt)
+                return r
+
+            elif name == "manage_calendar":
+                r = self._manage_calendar(args)
+                return r
+
+            elif name == "set_location":
+                r = self._set_location(args)
                 return r
 
             elif name == "remote_control":
