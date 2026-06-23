@@ -266,6 +266,7 @@ class JarvisLocal:
         "travis", "trevis", "tarvis", "jarvist", "jarvas",
         "jervis", "jervys", "jerviss", "james", "jams",
         "jardim", "jardin", "jarvin", "jarvins",
+        "jervis", "gerver", "jervi",
     ]
 
     def __init__(self, ui: JarvisUI):
