@@ -739,6 +739,49 @@ TOOL_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "summarize_conversation",
+        "description": (
+            "Summarize the current or recent conversation. "
+            "Useful for long conversations to extract key points."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "conv_id": {
+                    "type": "INTEGER",
+                    "description": "Conversation ID to summarize (current if omitted)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "learn_preference",
+        "description": (
+            "Explicitly learn a user preference. "
+            "Use when the user states a preference, habit, or instruction. "
+            "Categories: likes, dislikes, favorite, habit, instruction."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "category": {
+                    "type": "STRING",
+                    "description": "Category: likes, dislikes, favorite, habit, instruction"
+                },
+                "key": {
+                    "type": "STRING",
+                    "description": "Preference key/name"
+                },
+                "value": {
+                    "type": "STRING",
+                    "description": "Preference value"
+                }
+            },
+            "required": ["category", "key", "value"]
+        }
+    },
 ]
 
 

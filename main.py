@@ -400,6 +400,15 @@ class JarvisLocal:
         except Exception:
             pass
 
+        # Learned preferences
+        try:
+            from memory.preferences import format_preferences_for_prompt
+            prefs_ctx = format_preferences_for_prompt()
+            if prefs_ctx:
+                parts.append(prefs_ctx)
+        except Exception:
+            pass
+
         parts.append(time_ctx)
         return "\n\n".join(parts)
 
@@ -1246,6 +1255,21 @@ class JarvisLocal:
                 r = self._set_location(args)
                 return r
 
+            elif name == "summarize_conversation":
+                from memory.summarizer import summarize_conversation, save_conversation_summary
+                summary = summarize_conversation(self._conversation)
+                save_conversation_summary(self._conv_id, summary, self._conversation)
+                return f"Conversation summary:\n{summary}"
+
+            elif name == "learn_preference":
+                from memory.preferences import learn_preference
+                cat = args.get("category", "notes")
+                key = args.get("key", "")
+                val = args.get("value", "")
+                if not key or not val:
+                    return "Need 'key' and 'value'."
+                return learn_preference(cat, key, val)
+
             elif name == "remote_control":
                 r = self._remote_control(args.get("action", "status"))
                 return r
@@ -1324,6 +1348,13 @@ class JarvisLocal:
         try:
             from memory.conversation_db import add_message
             add_message(self._conv_id, "assistant", content)
+        except Exception:
+            pass
+
+        # Auto-learn preferences from conversation
+        try:
+            from memory.preferences import auto_learn_from_conversation
+            auto_learn_from_conversation(self._conversation)
         except Exception:
             pass
 
