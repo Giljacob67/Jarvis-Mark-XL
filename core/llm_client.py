@@ -57,6 +57,21 @@ _STREAM_MAX_TOKENS = 1024
 _CHAT_MAX_TOKENS   = 1024
 
 
+def _openai_base(url: str) -> str:
+    """Normalize base URL — accept both https://host and https://host/v1."""
+    return url.rstrip("/")
+
+
+def _openai_models_url(url: str) -> str:
+    base = _openai_base(url)
+    return f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+
+
+def _openai_chat_url(url: str) -> str:
+    base = _openai_base(url)
+    return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
+
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -141,7 +156,7 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
     provider = get_llm_provider()
 
     if _is_openai_compat(provider):
-        health = f"{url}/v1/models"
+        health = _openai_models_url(url)
         headers = _get_auth_headers(provider)
         try:
             ok = requests.get(health, headers=headers, timeout=5).status_code == 200
@@ -211,7 +226,7 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         }
         headers = _get_auth_headers(provider)
         try:
-            resp = requests.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
+            resp = requests.post(_openai_chat_url(url), json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
             log.info("'%s' ready.", model)
             return True
@@ -294,7 +309,7 @@ def call_llm(
     """
     url, model = get_llm_settings()
     provider   = get_llm_provider()
-    endpoint   = f"{url}/v1/chat/completions" if provider != "ollama" else f"{url}/api/chat"
+    endpoint   = _openai_chat_url(url) if provider != "ollama" else f"{url}/api/chat"
     headers    = _get_auth_headers(provider)
 
     if _is_openai_compat(provider):
@@ -372,7 +387,7 @@ def call_llm_text(
         return cached.get("content", "")
 
     if _is_openai_compat(provider):
-        endpoint = f"{url}/v1/chat/completions"
+        endpoint = _openai_chat_url(url)
         headers  = _get_auth_headers(provider)
         payload  = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
         try:
@@ -522,7 +537,7 @@ def call_llm_stream(
     provider   = get_llm_provider()
 
     if _is_openai_compat(provider):
-        endpoint = f"{url}/v1/chat/completions"
+        endpoint = _openai_chat_url(url)
         headers  = _get_auth_headers(provider)
         payload: dict = {
             "model": model, "messages": messages,

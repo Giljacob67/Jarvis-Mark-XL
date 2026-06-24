@@ -41,7 +41,8 @@ def analyze_image(image_bytes: bytes, user_text: str, mime: str = "image/jpeg") 
     b64 = base64.b64encode(image_bytes).decode("ascii")
 
     if provider in ("ollama_cloud", "openai", "groq", "lmstudio", "localai", "jan", "llamacpp"):
-        endpoint = f"{url}/v1/chat/completions"
+        from core.llm_client import _openai_chat_url
+        endpoint = _openai_chat_url(url)
         headers: dict = {}
         api_key = (
             cfg.get("ollama_api_key", "")

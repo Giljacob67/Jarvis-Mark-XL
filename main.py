@@ -27,11 +27,16 @@ _warnings.filterwarnings("ignore", category=DeprecationWarning)
 _warnings.filterwarnings("ignore", category=FutureWarning)
 # ───────────────────────────────────────────────────────────────────────────
 
-# ── Bootstrap: auto-install base UI packages before anything else ──────────
-# Uses only stdlib so it works even on a completely fresh Python install.
+# ── Venv + bootstrap ───────────────────────────────────────────────────────
+# Debian/Ubuntu Python 3.11+ is PEP 668 "externally managed" — system pip is
+# blocked.  We always run inside a project-local .venv (created on first launch).
 import importlib.util as _ilu
 import subprocess      as _sp
 import sys             as _sys
+
+_PROJECT_ROOT = _os.path.dirname(_os.path.abspath(__file__))
+_VENV_DIR     = _os.path.join(_PROJECT_ROOT, ".venv")
+_VENV_PYTHON  = _os.path.join(_VENV_DIR, "bin", "python")
 
 _BASE_PKGS = [
     ("PyQt6",       "PyQt6"),
@@ -42,17 +47,39 @@ _BASE_PKGS = [
     ("requests",    "requests"),
 ]
 
+
+def _in_venv() -> bool:
+    return _sys.prefix != _sys.base_prefix
+
+
+def _ensure_venv() -> None:
+    """Create .venv if missing, then re-exec with its Python interpreter."""
+    if _in_venv():
+        return
+    if not _os.path.isfile(_VENV_PYTHON):
+        print("\n[MARK XL] Creating virtual environment (.venv)…")
+        _sp.run([_sys.executable, "-m", "venv", _VENV_DIR], check=True)
+        print("[MARK XL] .venv ready.\n")
+    print("[MARK XL] Switching to .venv…")
+    _os.execv(_VENV_PYTHON, [_VENV_PYTHON] + _sys.argv)
+
+
 def _bootstrap() -> None:
     need = [pkg for mod, pkg in _BASE_PKGS if _ilu.find_spec(mod) is None]
     if not need:
         return
     print(f"\n[MARK XL] First-run setup — installing: {', '.join(need)}")
     print("[MARK XL] This happens only once.\n")
-    _sp.run([_sys.executable, "-m", "pip", "install", *need], check=True)
+    _sp.run(
+        [_sys.executable, "-m", "pip", "install", *need,
+         "--quiet", "--disable-pip-version-check"],
+        check=True,
+    )
     print("\n[MARK XL] Base packages ready — restarting…\n")
-    # Replace current process with a fresh one (picks up newly installed packages)
     _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
 
+
+_ensure_venv()
 _bootstrap()
 # ───────────────────────────────────────────────────────────────────────────
 
