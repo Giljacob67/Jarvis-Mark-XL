@@ -175,17 +175,18 @@ def _load_system_prompt() -> str:
 # ---------------------------------------------------------------------------
 
 class _VADBuffer:
-    """Enhanced VAD: energy + spectral centroid for robust speech detection."""
+    """Enhanced VAD: adaptive noise floor + energy + spectral centroid."""
 
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 1.5,    # silence after last word → send to STT
-        speech_thresh:  float = 0.001,  # RMS above this = speech (very sensitive for MacBook mic)
-        silence_thresh: float = 0.0005, # RMS below this = silence (very sensitive)
-        min_speech_sec: float = 0.3,
-        max_speech_sec: float = 30.0,
-        centroid_thresh: float = 500.0,  # spectral centroid above this = voice
+        silence_sec:    float = 1.2,    # silence after last word → send to STT
+        speech_thresh:  float = 0.015,  # RMS above noise floor = speech
+        silence_thresh: float = 0.008,  # RMS below this = silence
+        min_speech_sec: float = 0.4,
+        max_speech_sec: float = 20.0,
+        centroid_thresh: float = 800.0,  # spectral centroid above this = voice
+        noise_floor_window: int = 50,  # chunks to average for noise floor
     ):
         self._sr             = sample_rate
         self._sil_n          = int(silence_sec * sample_rate)
@@ -197,6 +198,12 @@ class _VADBuffer:
         self._buf:           list[np.ndarray] = []
         self._in_spch        = False
         self._sil_cnt        = 0
+        
+        # Adaptive noise floor estimation
+        self._noise_floor_samples: list[float] = []
+        self._noise_floor_window = noise_floor_window
+        self._noise_floor_rms = 0.002  # default noise floor
+        self._calibrated = False
 
     def _spectral_centroid(self, chunk: np.ndarray) -> float:
         """Compute spectral centroid — higher values indicate voice vs noise."""
@@ -207,24 +214,43 @@ class _VADBuffer:
             return 0.0
         return float(np.sum(freqs * fft) / total)
 
+    def _update_noise_floor(self, rms: float) -> None:
+        """Update noise floor estimate from quiet chunks."""
+        if not self._in_spch:
+            self._noise_floor_samples.append(rms)
+            if len(self._noise_floor_samples) > self._noise_floor_window:
+                self._noise_floor_samples.pop(0)
+            
+            if len(self._noise_floor_samples) >= 10:
+                # Use 90th percentile as noise floor (avoids outliers)
+                sorted_samples = sorted(self._noise_floor_samples)
+                idx = int(len(sorted_samples) * 0.9)
+                self._noise_floor_rms = sorted_samples[idx]
+                self._calibrated = True
+
     def process(self, chunk: np.ndarray) -> np.ndarray | None:
         """
         Feed one audio chunk (float32 mono).
         Returns complete utterance when speech ends, otherwise None.
 
-        Uses energy + spectral centroid:
-          - speech starts when RMS > speech_thresh AND centroid > 1500 Hz
+        Uses adaptive noise floor + energy + spectral centroid:
+          - speech starts when RMS > (noise_floor + speech_thresh) AND centroid > threshold
           - speech ends only when RMS < silence_thresh
-        The centroid check rejects background noise (fans, hums) that have
-        low spectral content.
         """
         rms      = float(np.sqrt(np.mean(chunk ** 2)))
         centroid = self._spectral_centroid(chunk)
         total_n  = sum(len(c) for c in self._buf)
+        
+        # Update noise floor estimate
+        self._update_noise_floor(rms)
+        
+        # Adaptive threshold based on noise floor
+        adaptive_speech_thresh = self._noise_floor_rms + self._speech_thresh
+        adaptive_silence_thresh = self._noise_floor_rms + self._sil_thresh
 
-        # Voice detection: energy above threshold AND spectral centroid indicates voice
-        is_voice = rms > self._speech_thresh and centroid > self._centroid_thresh
-        is_noise = rms > self._speech_thresh and centroid <= self._centroid_thresh
+        # Voice detection: energy above adaptive threshold AND spectral centroid indicates voice
+        is_voice = rms > adaptive_speech_thresh and centroid > self._centroid_thresh
+        is_noise = rms > adaptive_speech_thresh and centroid <= self._centroid_thresh
 
         if is_voice:
             self._in_spch = True
@@ -234,7 +260,7 @@ class _VADBuffer:
             pass  # reject noise when not already in speech
         elif self._in_spch:
             self._buf.append(chunk.copy())
-            if rms < self._sil_thresh:
+            if rms < adaptive_silence_thresh:
                 self._sil_cnt += len(chunk)
 
             if self._sil_cnt >= self._sil_n or total_n >= self._max_n:
@@ -245,6 +271,40 @@ class _VADBuffer:
                 if len(audio) >= self._min_n:
                     return audio
         return None
+
+
+def _preprocess_audio(audio: np.ndarray, target_rms: float = 0.1) -> np.ndarray:
+    """
+    Preprocess audio for better STT accuracy:
+    - Normalize RMS to target level
+    - Apply simple high-pass filter to remove low-frequency noise
+    - Clip to prevent distortion
+    """
+    if len(audio) == 0:
+        return audio
+    
+    # Calculate current RMS
+    current_rms = float(np.sqrt(np.mean(audio ** 2)))
+    
+    if current_rms < 1e-6:
+        return audio  # Too quiet, skip processing
+    
+    # Normalize to target RMS
+    gain = target_rms / current_rms
+    audio = audio * gain
+    
+    # Simple high-pass filter (remove DC offset and low-frequency rumble)
+    # Using a simple first-order IIR filter
+    alpha = 0.97
+    filtered = np.zeros_like(audio)
+    filtered[0] = audio[0]
+    for i in range(1, len(audio)):
+        filtered[i] = alpha * (filtered[i-1] + audio[i] - audio[i-1])
+    
+    # Clip to prevent distortion
+    filtered = np.clip(filtered, -1.0, 1.0)
+    
+    return filtered.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -262,11 +322,15 @@ class JarvisLocal:
     WAKE_WORD = "jarvis"
     WAKE_WORD_VARIANTS = [
         "jarvis", "járvis", "jarviz", "jarvys", "jarviss", "jarves", "jarvi",
-        # Common Whisper misrecognitions of "Jarvis":
+        # Common Whisper misrecognitions of "Jarvis" in Portuguese:
         "travis", "trevis", "tarvis", "jarvist", "jarvas",
         "jervis", "jervys", "jerviss", "james", "jams",
         "jardim", "jardin", "jarvin", "jarvins",
-        "jervis", "gerver", "jervi",
+        "jervis", "gerver", "jervi", "jarves",
+        # Additional Portuguese-specific misrecognitions:
+        "jarvis", "já vis", "já viu", "já vi",
+        "charles", "sharvis", "xarvis",
+        "service", "airvis", "arvis",
     ]
 
     def __init__(self, ui: JarvisUI):
@@ -443,24 +507,32 @@ class JarvisLocal:
             text = self._tts_queue.get()
             try:
                 if text and self._tts:
+                    # Set speaking state BEFORE audio starts
                     with self._speaking_lock:
                         self._speaking = True
                     self.ui.set_state("SPEAKING")
                     print(f"[TTS] Speaking: {text[:50]}...")
-                    self._tts.speak(text)
-                    print(f"[TTS] Done: {text[:50]}...")
-                else:
-                    print(f"[TTS] Skipped: tts={self._tts is not None}, text={bool(text)}")
+                    
+                    # Play audio with timeout protection
+                    try:
+                        self._tts.speak(text)
+                        print(f"[TTS] Done: {text[:50]}...")
+                    except Exception as e:
+                        print(f"[TTS] Playback error: {e}")
+                        # Continue to finally block to reset state
+                
             except Exception as e:
                 print(f"[TTS] speak error: {e}")
                 import traceback; traceback.print_exc()
             finally:
+                # ALWAYS reset speaking state, even on error
                 self._tts_queue.task_done()
                 if self._tts_queue.empty():
                     with self._speaking_lock:
                         self._speaking = False
                     if not self.ui.muted:
                         self.ui.set_state("LISTENING")
+                    print("[TTS] Queue empty, mic re-enabled")
 
     def set_speaking(self, value: bool) -> None:
         with self._speaking_lock:
@@ -471,10 +543,11 @@ class JarvisLocal:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str) -> None:
+        """Queue text for TTS playback. Speaking state is managed by _tts_worker."""
         if not text or not self._tts:
             return
-        with self._speaking_lock:
-            self._speaking = True
+        # Don't set _speaking here — let _tts_worker manage it
+        # This prevents race conditions where mic is muted before audio starts
         self._tts_queue.put(text)
 
     def speak_error(self, tool_name: str, error) -> None:
@@ -1688,7 +1761,7 @@ class JarvisLocal:
     # ------------------------------------------------------------------
 
     def _listen_whisper(self) -> None:
-        """Mic → VAD → Whisper → Wake Word Check → LLM loop."""
+        """Mic → VAD → Preprocessing → Whisper → Wake Word Check → LLM loop."""
         vad = _VADBuffer()
         q: queue.Queue = queue.Queue(maxsize=200)
         
@@ -1728,6 +1801,10 @@ class JarvisLocal:
                             if self._stt is None:
                                 self.ui.set_state("IDLE")
                                 continue   # STT failed to load — don't crash the loop
+                            
+                            # Preprocess audio for better STT accuracy
+                            audio = _preprocess_audio(audio)
+                            
                             self.ui.set_state("THINKING")
                             text = self._stt.transcribe(audio)
                             if text.strip():
