@@ -84,18 +84,57 @@ def _load_config() -> dict:
         return {}
 
 
+def _default_url_for_provider(provider: str) -> str:
+    return {
+        "groq":         "https://api.groq.com/openai/v1",
+        "ollama_cloud": "https://ollama.com",
+        "openai":       "http://localhost:1234",
+        "ollama":       "http://localhost:11434",
+    }.get(provider, _DEFAULTS["llm_url"])
+
+
 def get_fast_llm_model() -> str:
     """Fast model for casual chat (low latency). Falls back to llm_model."""
     cfg = _load_config()
-    # Cloud models (e.g. deepseek-v4-flash:cloud) are already fast — use llm_model directly.
     primary = cfg.get("llm_model", _DEFAULTS["llm_model"])
-    if get_llm_provider() == "ollama_cloud":
-        return primary
     return (
         cfg.get("llm_fast_model", "").strip()
         or cfg.get("llm_fallback_model", "").strip()
         or primary
     )
+
+
+def get_chat_llm_config() -> tuple[str, str, str]:
+    """
+    Low-latency path for casual chat: (base_url, model, provider).
+
+    When llm_chat_provider is set (or Groq key exists while primary is slower
+    cloud), routes chat to a fast model instead of the power model.
+    """
+    cfg = _load_config()
+    primary = get_llm_provider()
+
+    raw_chat = cfg.get("llm_chat_provider", "").strip().lower()
+    if raw_chat in ("groq", "ollama_cloud", "openai", "ollama"):
+        chat_provider = raw_chat
+    elif cfg.get("groq_api_key", "").strip() and primary != "groq":
+        chat_provider = "groq"
+    else:
+        chat_provider = primary
+
+    default_url = _default_url_for_provider(chat_provider)
+    url = cfg.get("llm_url", default_url).rstrip("/") if chat_provider == primary else default_url
+
+    if chat_provider == "groq":
+        model = (
+            cfg.get("llm_fast_model", "").strip()
+            or cfg.get("llm_fallback_model", "").strip()
+            or "llama-3.1-8b-instant"
+        )
+    else:
+        model = get_fast_llm_model()
+
+    return url, model, chat_provider
 
 
 def get_power_llm_model() -> str:
@@ -108,13 +147,7 @@ def get_llm_settings() -> tuple[str, str]:
     """Returns (base_url, model_name)."""
     cfg      = _load_config()
     provider = get_llm_provider()
-    default_url = {
-        "groq":         "https://api.groq.com/openai/v1",
-        "ollama_cloud": "https://ollama.com",
-        "openai":       "http://localhost:1234",
-        "ollama":       "http://localhost:11434",
-    }.get(provider, _DEFAULTS["llm_url"])
-    url   = cfg.get("llm_url", default_url).rstrip("/")
+    url   = cfg.get("llm_url", _default_url_for_provider(provider)).rstrip("/")
     model = cfg.get("llm_model", _DEFAULTS["llm_model"])
     return url, model
 
@@ -513,6 +546,9 @@ def _stream_sse(
             full_content += text
             buf          += text
 
+            if text:
+                yield {"type": "chunk", "text": text}
+
             # Yield complete sentences
             while True:
                 m = _SENT_END.search(buf)
@@ -559,17 +595,24 @@ def call_llm_stream(
     timeout:  int = 120,
     model:    str | None = None,
     max_tokens: int | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
 ) -> Generator[dict, None, None]:
     """
     Streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible.
 
     Yields:
+        {"type": "chunk", "text": str}             — each raw token delta
         {"type": "sentence", "text": str}          — each complete sentence
         {"type": "done", "content": str, "tool_calls": list}  — stream end
     """
-    url, default_model = get_llm_settings()
+    provider = provider or get_llm_provider()
+    if base_url:
+        url = base_url.rstrip("/")
+        _, default_model = get_llm_settings()
+    else:
+        url, default_model = get_llm_settings()
     model    = model or default_model
-    provider = get_llm_provider()
     tok_cap  = max_tokens if max_tokens is not None else (
         _STREAM_MAX_TOKENS if tools else _STREAM_CHAT_TOKENS
     )
@@ -650,6 +693,9 @@ def call_llm_stream(
                 delta = msg.get("content") or ""
                 full_content += delta
                 buf          += delta
+
+                if delta:
+                    yield {"type": "chunk", "text": delta}
 
                 while True:
                     m = _SENT_END.search(buf)

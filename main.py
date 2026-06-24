@@ -179,6 +179,13 @@ def _load_system_prompt() -> str:
         )
 
 
+# Minimal prompt for casual chat — no tool rules, ~30 tokens vs ~400+.
+_CHAT_SYSTEM_PROMPT = (
+    "You are JARVIS, a personal AI assistant. "
+    "Reply in the user's language. Max 2 short sentences. Be direct and friendly."
+)
+
+
 # ---------------------------------------------------------------------------
 # Voice Activity Detection (used for Whisper listen loop)
 # ---------------------------------------------------------------------------
@@ -307,6 +314,7 @@ class JarvisLocal:
         self._tts_queue:      queue.Queue = queue.Queue()
         self._conversation:   list[dict]  = []
         self._turn_lock       = threading.Lock()
+        self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -317,6 +325,13 @@ class JarvisLocal:
         self._conv_id = create_conversation()
 
         self.ui.on_text_command = self._on_text_command
+
+    def _mic_blocked(self) -> bool:
+        """True while Jarvis is speaking or in post-TTS cooldown (blocks echo)."""
+        with self._speaking_lock:
+            if self._speaking:
+                return True
+        return time.time() < self._listen_blocked_until
 
     # ------------------------------------------------------------------
     # Wake word detection
@@ -395,24 +410,22 @@ class JarvisLocal:
     # System prompt
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self) -> str:
-        # ── ORDER MATTERS for Ollama KV prefix caching ─────────────────────
-        # Ollama caches the KV attention state of any stable prompt prefix.
-        # By putting the STATIC JARVIS protocol text FIRST, Ollama reuses its
-        # cached KV for all those tokens on every request.  Only the small
-        # dynamic tail (memory + time, ~50-80 tokens) needs re-evaluation.
-        # This turns a 17-second first-token into a sub-second one after warmup.
-        #
-        # Rule: static content first → semi-static memory middle → dynamic time LAST.
-        sys_p   = _load_system_prompt()               # static — never changes mid-session
+    def _build_system_prompt(self, chat_mode: bool = False) -> str:
+        now = datetime.now()
+        time_ctx = f"[NOW] {now.strftime('%A, %d %b %Y %H:%M')}"
+
+        if chat_mode:
+            memory  = load_memory()
+            mem_str = format_memory_for_prompt(memory)
+            parts = [_CHAT_SYSTEM_PROMPT, time_ctx]
+            if mem_str:
+                parts.insert(1, mem_str)
+            return "\n\n".join(parts)
+
+        # ── ORDER MATTERS for Ollama KV prefix caching (local Ollama only) ─
+        sys_p   = _load_system_prompt()
         memory  = load_memory()
-        mem_str = format_memory_for_prompt(memory)    # semi-static — changes only when user tells facts
-        now     = datetime.now()
-        time_ctx = (
-            f"[CURRENT DATE & TIME]\n"
-            f"Right now it is: {now.strftime('%A, %B %d, %Y — %I:%M %p')}\n"
-            f"Use this to calculate exact times for reminders."
-        )
+        mem_str = format_memory_for_prompt(memory)
         parts = [sys_p]
         if mem_str:
             parts.append(mem_str)
@@ -447,6 +460,7 @@ class JarvisLocal:
                 if self._tts_queue.empty():
                     with self._speaking_lock:
                         self._speaking = False
+                    self._listen_blocked_until = time.time() + 1.5
                     if not self.ui.muted:
                         self.ui.set_state("LISTENING")
 
@@ -854,12 +868,16 @@ class JarvisLocal:
         from memory.conversation_db import add_message
         add_message(self._conv_id, "user", user_text)
 
-        MAX_HISTORY = 10
+        MAX_HISTORY = 6 if not self._needs_tools(user_text) else 10
         if len(self._conversation) > MAX_HISTORY:
             self._conversation = self._conversation[-MAX_HISTORY:]
 
+        needs_tools    = self._needs_tools(user_text)
+        chat_mode      = not needs_tools
+        tools_for_turn = OLLAMA_TOOLS if needs_tools else None
+
         messages = [
-            {"role": "system", "content": self._build_system_prompt()}
+            {"role": "system", "content": self._build_system_prompt(chat_mode=chat_mode)}
         ] + list(self._conversation)
 
         # Tools whose output needs a second LLM round to summarise/interpret.
@@ -867,13 +885,13 @@ class JarvisLocal:
         _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task"}
 
         MAX_TOOL_ROUNDS = 6
-        needs_tools    = self._needs_tools(user_text)
-        tools_for_turn = OLLAMA_TOOLS if needs_tools else None
-
-        from core.llm_client import get_fast_llm_model, get_power_llm_model
-        llm_model = get_power_llm_model() if needs_tools else get_fast_llm_model()
+        from core.llm_client import get_chat_llm_config, get_fast_llm_model, get_power_llm_model
+        chat_url, chat_model, chat_provider = get_chat_llm_config()
+        llm_model = get_power_llm_model() if needs_tools else chat_model
 
         _t0 = time.time()
+        _replied = False
+        _first_chunk_logged = False
 
         for _round in range(MAX_TOOL_ROUNDS):
             final_content    = ""
@@ -887,18 +905,21 @@ class JarvisLocal:
 
             try:
                 _round_model = llm_model if _round == 0 else get_power_llm_model()
+                _use_chat_route = chat_mode and _round == 0
                 for event in call_llm_stream(
                     messages, round_tools,
                     model=_round_model,
+                    provider=chat_provider if _use_chat_route else None,
+                    base_url=chat_url if _use_chat_route else None,
                 ):
-                    if event["type"] == "sentence":
-                        if _round == 0 and not _streamed:
+                    if event["type"] == "chunk":
+                        if _round == 0 and not _first_chunk_logged:
+                            _first_chunk_logged = True
                             _lat = int((time.time() - _t0) * 1000)
-                            self.ui.write_log(f"SYS: ⚡ first token {_lat}ms")
+                            _route = chat_provider if _use_chat_route else "power"
+                            self.ui.write_log(f"SYS: ⚡ first token {_lat}ms ({_route})")
+                    elif event["type"] == "sentence":
                         # ── Overlap TTS with LLM generation ─────────────────
-                        # Queue this sentence immediately; the TTS worker
-                        # synthesises it while the LLM is still generating
-                        # the next one.
                         _streamed.append(event["text"])
                         self.speak(event["text"])
                         self.ui.stream_sentence(event["text"])
@@ -913,6 +934,7 @@ class JarvisLocal:
             if not final_tool_calls:
                 reply = final_content or (" ".join(_streamed) if _streamed else "")
                 if reply:
+                    _replied = True
                     assistant_msg = {"role": "assistant", "content": reply}
                     messages.append(assistant_msg)
                     self._conversation.append(assistant_msg)
@@ -921,6 +943,8 @@ class JarvisLocal:
                         self.speak(reply)
                     self.ui.add_history("jarvis", reply)
                     self._persist_assistant(reply)
+                    break
+                self.ui.write_log("ERR: LLM — empty reply (no tools)")
                 break
 
             # ── Tool calls present ────────────────────────────────────────────
@@ -938,6 +962,7 @@ class JarvisLocal:
                 for tc in final_tool_calls
             )
             if _only_memory and final_content:
+                _replied = True
                 for tc in final_tool_calls:
                     fn    = tc.get("function", {})
                     targs = fn.get("arguments", {})
@@ -1012,6 +1037,7 @@ class JarvisLocal:
                 self.ui.add_history("jarvis", _ack)
                 self._persist_assistant(_ack)
                 self.speak(_ack)
+                _replied = True
                 break
 
             # ── Direct-result: speak tool output, skip LLM round ────────────
@@ -1024,10 +1050,10 @@ class JarvisLocal:
                 self.ui.add_history("jarvis", _reply)
                 self._persist_assistant(_reply)
                 self.speak(_reply)
+                _replied = True
                 break
 
-        else:
-            # for/else: only runs if the loop did NOT break (no successful reply)
+        if not _replied:
             self.ui.write_log("ERR: LLM — empty response after all rounds")
             self.speak("Desculpe senhor, tive um problema ao processar. Pode repetir?")
 
@@ -1044,9 +1070,7 @@ class JarvisLocal:
         q: queue.Queue = queue.Queue(maxsize=200)
 
         def callback(indata, frames, time_info, status):
-            with self._speaking_lock:
-                is_speaking = self._speaking
-            if not is_speaking and not self.ui.muted:
+            if not self._mic_blocked() and not self.ui.muted:
                 try:
                     q.put_nowait(indata.copy())
                 except queue.Full:
@@ -1101,9 +1125,7 @@ class JarvisLocal:
         q: queue.Queue = queue.Queue(maxsize=200)
 
         def callback(indata, frames, time_info, status):
-            with self._speaking_lock:
-                is_speaking = self._speaking
-            if not is_speaking and not self.ui.muted:
+            if not self._mic_blocked() and not self.ui.muted:
                 try:
                     q.put_nowait(indata.copy())
                 except queue.Full:
@@ -1283,6 +1305,9 @@ class JarvisLocal:
                 self.ui.write_log("SYS: Face auth passed.")
 
             # ── Go online immediately ──────────────────────────────────────
+            from core.llm_client import get_chat_llm_config
+            _cu, _cm, _cp = get_chat_llm_config()
+            self.ui.write_log(f"SYS: Chat fast-path → {_cp} / {_cm}")
             self.ui.write_log("SYS: JARVIS online.")
             self.ui.set_state("LISTENING")
             self.ui.set_startup_status("● JARVIS online · Voice loading in background…")
