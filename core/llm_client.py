@@ -20,6 +20,11 @@ Supports three backends — selected via  "llm_provider"  in config/api_keys.jso
         Set  "llm_url": "http://localhost:1234"  in config.
         Note: tool-calling support depends on the model; use a model that
         supports function/tool calls (e.g. Qwen2.5, Llama-3.1, Mistral).
+
+  "llm_provider": "groq"
+        Uses Groq's OpenAI-compatible API (https://api.groq.com/openai/v1).
+        Requires "groq_api_key" in config.
+        Models: llama-3.3-70b-versatile, llama-3.1-8b-instant, etc.
 """
 from __future__ import annotations
 
@@ -47,6 +52,10 @@ _DEFAULTS = {
     "llm_fallback_model":  "",
 }
 
+# Token budget — cloud models need headroom for tool calls + reasoning.
+_STREAM_MAX_TOKENS = 1024
+_CHAT_MAX_TOKENS   = 1024
+
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -61,20 +70,33 @@ def _load_config() -> dict:
 
 def get_llm_settings() -> tuple[str, str]:
     """Returns (base_url, model_name)."""
-    cfg   = _load_config()
-    url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
+    cfg      = _load_config()
+    provider = get_llm_provider()
+    default_url = {
+        "groq":         "https://api.groq.com/openai/v1",
+        "ollama_cloud": "https://ollama.com",
+        "openai":       "http://localhost:1234",
+        "ollama":       "http://localhost:11434",
+    }.get(provider, _DEFAULTS["llm_url"])
+    url   = cfg.get("llm_url", default_url).rstrip("/")
     model = cfg.get("llm_model", _DEFAULTS["llm_model"])
     return url, model
 
 
 def get_llm_provider() -> str:
-    """Returns 'ollama', 'ollama_cloud', or 'openai'."""
+    """Returns 'ollama', 'ollama_cloud', 'groq', or 'openai'."""
     raw = _load_config().get("llm_provider", "ollama").strip().lower()
+    if raw == "groq":
+        return "groq"
     if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp"):
         return "openai"
     if raw in ("ollama_cloud", "ollamacloud"):
         return "ollama_cloud"
     return "ollama"
+
+
+def _is_openai_compat(provider: str) -> bool:
+    return provider in ("ollama_cloud", "openai", "groq")
 
 
 def _get_fallback_model() -> str:
@@ -86,10 +108,27 @@ def _is_model_not_found(exc: Exception) -> bool:
     return any(k in msg for k in ("not found", "pull the model", "model", "404", "doesn't exist"))
 
 
-def _get_auth_headers() -> dict:
-    """Bearer token for Ollama Cloud API."""
-    api_key = _load_config().get("ollama_api_key", "") or os.environ.get("OLLAMA_API_KEY", "")
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+def _get_auth_headers(provider: str | None = None) -> dict:
+    """Bearer token for cloud / OpenAI-compatible providers."""
+    provider = provider or get_llm_provider()
+    cfg = _load_config()
+    key = ""
+    if provider == "ollama_cloud":
+        key = cfg.get("ollama_api_key", "") or os.environ.get("OLLAMA_API_KEY", "")
+    elif provider == "groq":
+        key = cfg.get("groq_api_key", "") or os.environ.get("GROQ_API_KEY", "")
+    elif provider == "openai":
+        key = cfg.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _provider_label(provider: str) -> str:
+    return {
+        "ollama_cloud": "Ollama Cloud API",
+        "groq":         "Groq API",
+        "openai":       "OpenAI-compatible server",
+        "ollama":       "Ollama",
+    }.get(provider, provider)
 
 
 # ---------------------------------------------------------------------------
@@ -101,16 +140,16 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
     url, _   = get_llm_settings()
     provider = get_llm_provider()
 
-    if provider in ("ollama_cloud", "openai"):
+    if _is_openai_compat(provider):
         health = f"{url}/v1/models"
-        headers = _get_auth_headers() if provider == "ollama_cloud" else {}
+        headers = _get_auth_headers(provider)
         try:
             ok = requests.get(health, headers=headers, timeout=5).status_code == 200
-            label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
+            label = _provider_label(provider)
             log.info("%s %s at %s", label, "reachable" if ok else "returned non-200", url)
             return ok
         except Exception as e:
-            log.warning("Cannot reach %s at %s: %s", label, url, e)
+            log.warning("Cannot reach %s at %s: %s", _provider_label(provider), url, e)
             return False
 
     # Native Ollama
@@ -165,12 +204,12 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": "hi"})
 
-    if provider in ("ollama_cloud", "openai"):
+    if _is_openai_compat(provider):
         payload: dict = {
             "model": model, "messages": messages,
             "stream": False, "max_tokens": 1,
         }
-        headers = _get_auth_headers() if provider == "ollama_cloud" else {}
+        headers = _get_auth_headers(provider)
         try:
             resp = requests.post(f"{url}/v1/chat/completions", json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
@@ -256,12 +295,12 @@ def call_llm(
     url, model = get_llm_settings()
     provider   = get_llm_provider()
     endpoint   = f"{url}/v1/chat/completions" if provider != "ollama" else f"{url}/api/chat"
-    headers    = _get_auth_headers() if provider == "ollama_cloud" else {}
+    headers    = _get_auth_headers(provider)
 
-    if provider in ("ollama_cloud", "openai"):
+    if _is_openai_compat(provider):
         payload: dict = {
             "model": model, "messages": messages,
-            "stream": False, "max_tokens": 150,
+            "stream": False, "max_tokens": _CHAT_MAX_TOKENS,
         }
         if tools:
             payload["tools"] = tools
@@ -277,7 +316,7 @@ def call_llm(
     payload = {
         "model": model, "messages": messages,
         "stream": False, "keep_alive": -1,
-        "options": {"num_predict": 500, "num_gpu": 99},
+        "options": {"num_predict": _CHAT_MAX_TOKENS, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools
@@ -332,9 +371,9 @@ def call_llm_text(
         log.debug("Cache hit for prompt: %s", prompt[:50])
         return cached.get("content", "")
 
-    if provider in ("ollama_cloud", "openai"):
+    if _is_openai_compat(provider):
         endpoint = f"{url}/v1/chat/completions"
-        headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
+        headers  = _get_auth_headers(provider)
         payload  = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
         try:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
@@ -482,12 +521,12 @@ def call_llm_stream(
     url, model = get_llm_settings()
     provider   = get_llm_provider()
 
-    if provider in ("ollama_cloud", "openai"):
+    if _is_openai_compat(provider):
         endpoint = f"{url}/v1/chat/completions"
-        headers  = _get_auth_headers() if provider == "ollama_cloud" else {}
+        headers  = _get_auth_headers(provider)
         payload: dict = {
             "model": model, "messages": messages,
-            "stream": True, "max_tokens": 150,
+            "stream": True, "max_tokens": _STREAM_MAX_TOKENS,
         }
         if tools:
             payload["tools"] = tools
@@ -495,8 +534,7 @@ def call_llm_stream(
         try:
             yield from _stream_sse(url, endpoint, payload, headers, timeout, provider, provider)
         except requests.exceptions.ConnectionError:
-            label = "Ollama Cloud API" if provider == "ollama_cloud" else "OpenAI-compatible server"
-            raise RuntimeError(f"Cannot reach {label} at {url}.")
+            raise RuntimeError(f"Cannot reach {_provider_label(provider)} at {url}.")
         except requests.exceptions.Timeout:
             raise RuntimeError(f"{provider} stream timed out.")
         except requests.exceptions.HTTPError as e:
@@ -510,7 +548,7 @@ def call_llm_stream(
     payload = {
         "model": model, "messages": messages,
         "stream": True, "keep_alive": -1,
-        "options": {"num_predict": 500, "num_gpu": 99},
+        "options": {"num_predict": _STREAM_MAX_TOKENS, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools

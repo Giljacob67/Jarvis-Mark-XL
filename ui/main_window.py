@@ -1014,9 +1014,11 @@ class SetupOverlay(QWidget):
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
         """
 
-        self._sel_stt          = _init.get("stt_engine",    "whisper")
-        self._sel_tts          = _init.get("tts_engine",    "edgetts")
-        self._sel_llm_provider = _init.get("llm_provider",  "ollama")
+        # First-boot defaults: cloud LLM + ElevenLabs (user can switch to local anytime).
+        _first_boot = (mode == "init" and not _init.get("llm_provider"))
+        self._sel_stt          = _init.get("stt_engine",    "deepgram" if _first_boot else "whisper")
+        self._sel_tts          = _init.get("tts_engine",    "elevenlabs" if _first_boot else "edgetts")
+        self._sel_llm_provider = _init.get("llm_provider",  "groq" if _first_boot else "ollama")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 16, 22, 16)
@@ -1091,7 +1093,7 @@ class SetupOverlay(QWidget):
         layout.addWidget(_lbl("SPEECH-TO-TEXT ENGINE", 7, col=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
         stt_row, self._stt_btns = _toggle_row(
-            [("whisper","🎙 Whisper"), ("vosk","🔊 Vosk")],
+            [("deepgram","⚡ Deepgram"), ("whisper","🎙 Whisper"), ("vosk","🔊 Vosk")],
             lambda: self._sel_stt,
             self._set_stt,
         )
@@ -1135,15 +1137,29 @@ class SetupOverlay(QWidget):
 
         layout.addLayout(stt_detail)
 
+        # Deepgram API key
+        self._dg_key_widget = QWidget()
+        self._dg_key_widget.setStyleSheet("background: transparent;")
+        dg_row = QHBoxLayout(self._dg_key_widget)
+        dg_row.setContentsMargins(0, 0, 0, 0)
+        dg_row.setSpacing(5)
+        dg_row.addWidget(_lbl("DG Key:", 7, col=C.TEXT_MED,
+                               align=Qt.AlignmentFlag.AlignRight))
+        self._dg_key_input = _input("Deepgram API key", pw=True)
+        self._dg_key_input.setText(_init.get("deepgram_api_key", ""))
+        dg_row.addWidget(self._dg_key_input)
+        layout.addWidget(self._dg_key_widget)
+
         # Initial visibility
         self._whisper_combo.setVisible(self._sel_stt == "whisper")
         self._vosk_model_input.setVisible(self._sel_stt == "vosk")
+        self._dg_key_widget.setVisible(self._sel_stt == "deepgram")
 
         stt_lang_row = QHBoxLayout(); stt_lang_row.setSpacing(5)
         stt_lang_row.addWidget(_lbl("Language:", 7, col=C.TEXT_MED,
                                     align=Qt.AlignmentFlag.AlignRight))
         self._stt_lang_input = _input("auto  (or: tr / en / de / fr / es / zh …)")
-        self._stt_lang_input.setText(_init.get("stt_language", "auto"))
+        self._stt_lang_input.setText(_init.get("stt_language", "pt" if _first_boot else "auto"))
         stt_lang_row.addWidget(self._stt_lang_input)
         layout.addLayout(stt_lang_row)
         layout.addWidget(_sep())
@@ -1155,9 +1171,10 @@ class SetupOverlay(QWidget):
         # Provider toggle: Ollama Local vs Ollama Cloud vs LM Studio / OpenAI-compatible
         llm_prov_row, self._llm_prov_btns = _toggle_row(
             [
-                ("ollama",       "🦙 Ollama Local"),
+                ("groq",         "⚡ Groq"),
                 ("ollama_cloud", "☁️ Ollama Cloud"),
-                ("openai",       "🔌 LM Studio / OpenAI"),
+                ("ollama",       "🦙 Ollama Local"),
+                ("openai",       "🔌 LM Studio"),
             ],
             lambda: self._sel_llm_provider,
             self._set_llm_provider,
@@ -1165,13 +1182,14 @@ class SetupOverlay(QWidget):
         layout.addLayout(llm_prov_row)
 
         # Hint label — changes based on provider
-        _ollama_hint = "localhost:11434  ·  run: ollama pull qwen2.5:3b"
-        _ollama_cloud_hint = "ollama.com/v1  ·  models run on Ollama's cloud GPUs"
-        _openai_hint = "lmstudio.ai  ·  start Local Server first, then pick model"
+        _hints_init = {
+            "groq":         "api.groq.com  ·  llama-3.3-70b-versatile (fast + smart)",
+            "ollama_cloud": "ollama.com/v1  ·  models run on Ollama's cloud GPUs",
+            "openai":       "lmstudio.ai  ·  start Local Server first, then pick model",
+            "ollama":       "localhost:11434  ·  run: ollama pull qwen2.5:3b",
+        }
         self._llm_hint_lbl = _lbl(
-            _ollama_cloud_hint if self._sel_llm_provider == "ollama_cloud"
-            else _openai_hint if self._sel_llm_provider == "openai"
-            else _ollama_hint,
+            _hints_init.get(self._sel_llm_provider, _hints_init["ollama"]),
             7, col=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft
         )
         layout.addWidget(self._llm_hint_lbl)
@@ -1179,21 +1197,62 @@ class SetupOverlay(QWidget):
         llm_row = QHBoxLayout(); llm_row.setSpacing(5)
         llm_row.addWidget(_lbl("URL:", 7, col=C.TEXT_MED,
                                 align=Qt.AlignmentFlag.AlignRight))
-        _default_url = _init.get("llm_url",
-                                  "http://localhost:1234" if self._sel_llm_provider == "openai"
-                                  else "http://localhost:11434")
+        _url_placeholders = {
+            "groq":         "https://api.groq.com/openai/v1",
+            "openai":       "http://localhost:1234",
+            "ollama_cloud": "https://ollama.com",
+            "ollama":       "http://localhost:11434",
+        }
+        _default_url = _init.get(
+            "llm_url",
+            _url_placeholders.get(self._sel_llm_provider, "http://localhost:11434"),
+        )
         self._llm_url_input = _input(
-            "http://localhost:1234" if self._sel_llm_provider == "openai"
-            else "http://localhost:11434"
+            _url_placeholders.get(self._sel_llm_provider, "http://localhost:11434")
         )
         self._llm_url_input.setText(_default_url)
         llm_row.addWidget(self._llm_url_input, stretch=2)
         llm_row.addWidget(_lbl("Model:", 7, col=C.TEXT_MED,
                                 align=Qt.AlignmentFlag.AlignRight))
-        self._llm_model_input = _input("e.g.  qwen2.5:3b  /  llama3.2  /  mistral")
-        self._llm_model_input.setText(_init.get("llm_model", ""))
+        self._llm_model_input = _input(
+            "e.g.  gpt-oss:120b-cloud  /  qwen2.5:7b  /  llama3.2"
+        )
+        _default_model = _init.get(
+            "llm_model",
+            "llama-3.3-70b-versatile" if self._sel_llm_provider == "groq" and _first_boot
+            else "gpt-oss:120b-cloud" if self._sel_llm_provider == "ollama_cloud" and _first_boot
+            else "",
+        )
+        self._llm_model_input.setText(_default_model)
         llm_row.addWidget(self._llm_model_input, stretch=2)
         layout.addLayout(llm_row)
+
+        # Ollama Cloud API key — visible only when cloud provider is selected
+        self._ollama_key_widget = QWidget()
+        self._ollama_key_widget.setStyleSheet("background: transparent;")
+        oa_row = QHBoxLayout(self._ollama_key_widget)
+        oa_row.setContentsMargins(0, 0, 0, 0)
+        oa_row.setSpacing(5)
+        oa_row.addWidget(_lbl("Ollama Key:", 7, col=C.TEXT_MED,
+                               align=Qt.AlignmentFlag.AlignRight))
+        self._ollama_key_input = _input("Ollama Cloud API key", pw=True)
+        self._ollama_key_input.setText(_init.get("ollama_api_key", ""))
+        oa_row.addWidget(self._ollama_key_input)
+        layout.addWidget(self._ollama_key_widget)
+
+        # Groq API key
+        self._groq_key_widget = QWidget()
+        self._groq_key_widget.setStyleSheet("background: transparent;")
+        gq_row = QHBoxLayout(self._groq_key_widget)
+        gq_row.setContentsMargins(0, 0, 0, 0)
+        gq_row.setSpacing(5)
+        gq_row.addWidget(_lbl("Groq Key:", 7, col=C.TEXT_MED,
+                               align=Qt.AlignmentFlag.AlignRight))
+        self._groq_key_input = _input("Groq API key", pw=True)
+        self._groq_key_input.setText(_init.get("groq_api_key", ""))
+        gq_row.addWidget(self._groq_key_input)
+        layout.addWidget(self._groq_key_widget)
+
         layout.addWidget(_sep())
 
         # ── TTS ──────────────────────────────────────────────────────── #
@@ -1213,8 +1272,12 @@ class SetupOverlay(QWidget):
         self._voice_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         voice_row.addWidget(self._voice_lbl)
 
+        _default_voice = _init.get(
+            "tts_voice",
+            "GIuLCSVfgJaUuh7hYOY8" if self._sel_tts == "elevenlabs" else "en-US-GuyNeural",
+        )
         self._tts_voice_input = _input("en-US-GuyNeural")
-        self._tts_voice_input.setText(_init.get("tts_voice", "en-US-GuyNeural"))
+        self._tts_voice_input.setText(_default_voice)
         voice_row.addWidget(self._tts_voice_input)
 
         # Kokoro: dropdown with predefined voices (hidden unless Kokoro selected)
@@ -1288,9 +1351,35 @@ class SetupOverlay(QWidget):
         el_row.addWidget(self._el_key_input)
         layout.addWidget(self._el_key_widget)
 
+        # ElevenLabs model (Turbo / Flash / Multilingual)
+        self._el_model_widget = QWidget()
+        self._el_model_widget.setStyleSheet("background: transparent;")
+        em_row = QHBoxLayout(self._el_model_widget)
+        em_row.setContentsMargins(0, 0, 0, 0)
+        em_row.setSpacing(5)
+        em_row.addWidget(_lbl("EL Model:", 7, col=C.TEXT_MED,
+                               align=Qt.AlignmentFlag.AlignRight))
+        self._el_model_combo = QComboBox()
+        self._el_model_combo.setFixedHeight(28)
+        self._el_model_combo.setStyleSheet(_COMBO_STYLE)
+        for mid, label in [
+            ("eleven_turbo_v2_5",       "Turbo v2.5 — fast (recommended)"),
+            ("eleven_flash_v2_5",       "Flash v2.5 — fastest"),
+            ("eleven_multilingual_v2",  "Multilingual v2 — best quality"),
+        ]:
+            self._el_model_combo.addItem(label, userData=mid)
+        _cur_el = _init.get("tts_model", "eleven_turbo_v2_5")
+        for i in range(self._el_model_combo.count()):
+            if self._el_model_combo.itemData(i) == _cur_el:
+                self._el_model_combo.setCurrentIndex(i)
+                break
+        em_row.addWidget(self._el_model_combo)
+        layout.addWidget(self._el_model_widget)
+
         layout.addWidget(_sep())
 
-        # Set correct initial state for TTS UI
+        # Sync provider/TTS-specific fields (API key panels, hints, voice labels)
+        self._set_llm_provider(self._sel_llm_provider)
         self._update_tts_ui(self._sel_tts)
 
         # ── Action buttons ─────────────────────────────────────────────── #
@@ -1362,6 +1451,8 @@ class SetupOverlay(QWidget):
             self._kokoro_speed_widget.setVisible(is_kokoro)
         if hasattr(self, "_el_key_widget"):
             self._el_key_widget.setVisible(key == "elevenlabs")
+        if hasattr(self, "_el_model_widget"):
+            self._el_model_widget.setVisible(key == "elevenlabs")
 
     def _set_llm_provider(self, key: str):
         self._sel_llm_provider = key
@@ -1380,26 +1471,30 @@ class SetupOverlay(QWidget):
             """)
         # Update URL placeholder and hint to match selected provider
         if hasattr(self, "_llm_url_input"):
-            if key == "openai":
-                self._llm_url_input.setPlaceholderText("http://localhost:1234")
-                new_url = "http://localhost:1234"
-            elif key == "ollama_cloud":
-                self._llm_url_input.setPlaceholderText("https://ollama.com")
-                new_url = "https://ollama.com"
-            else:
-                self._llm_url_input.setPlaceholderText("http://localhost:11434")
-                new_url = "http://localhost:11434"
-            # Only set URL if it's a default URL (don't overwrite user-customised URLs)
+            _urls = {
+                "groq":         ("https://api.groq.com/openai/v1", "https://api.groq.com/openai/v1"),
+                "openai":       ("http://localhost:1234", "http://localhost:1234"),
+                "ollama_cloud": ("https://ollama.com", "https://ollama.com"),
+                "ollama":       ("http://localhost:11434", "http://localhost:11434"),
+            }
+            ph, new_url = _urls.get(key, ("http://localhost:11434", "http://localhost:11434"))
+            self._llm_url_input.setPlaceholderText(ph)
             cur = self._llm_url_input.text().strip()
-            if cur in ("", "http://localhost:11434", "http://localhost:1234", "https://ollama.com"):
+            if cur in ("", "http://localhost:11434", "http://localhost:1234",
+                        "https://ollama.com", "https://api.groq.com/openai/v1"):
                 self._llm_url_input.setText(new_url)
         if hasattr(self, "_llm_hint_lbl"):
             hints = {
+                "groq":         "api.groq.com  ·  llama-3.3-70b-versatile (fast + smart)",
                 "ollama":       "localhost:11434  ·  run: ollama pull qwen2.5:3b",
                 "ollama_cloud": "ollama.com/v1  ·  models run on Ollama's cloud GPUs",
                 "openai":       "lmstudio.ai  ·  start Local Server first, then pick model",
             }
             self._llm_hint_lbl.setText(hints.get(key, ""))
+        if hasattr(self, "_ollama_key_widget"):
+            self._ollama_key_widget.setVisible(key == "ollama_cloud")
+        if hasattr(self, "_groq_key_widget"):
+            self._groq_key_widget.setVisible(key == "groq")
 
     def _set_stt(self, key: str):
         self._sel_stt = key
@@ -1421,6 +1516,8 @@ class SetupOverlay(QWidget):
             self._whisper_combo.setVisible(key == "whisper")
         if hasattr(self, "_vosk_model_input"):
             self._vosk_model_input.setVisible(key == "vosk")
+        if hasattr(self, "_dg_key_widget"):
+            self._dg_key_widget.setVisible(key == "deepgram")
 
     def _set_tts(self, key: str):
         self._sel_tts = key
@@ -1463,23 +1560,30 @@ class SetupOverlay(QWidget):
             tts_speed = "1.0"
 
         _provider = getattr(self, "_sel_llm_provider", "ollama")
-        _default_url = (
-            "http://localhost:1234" if _provider == "openai"
-            else "https://ollama.com" if _provider == "ollama_cloud"
-            else "http://localhost:11434"
-        )
+        _default_url = {
+            "groq":         "https://api.groq.com/openai/v1",
+            "openai":       "http://localhost:1234",
+            "ollama_cloud": "https://ollama.com",
+            "ollama":       "http://localhost:11434",
+        }.get(_provider, "http://localhost:11434")
         cfg = {
             "stt_engine":         self._sel_stt,
             "stt_model":          stt_model,
             "stt_language":       self._stt_lang_input.text().strip() or "auto",
+            "deepgram_api_key":   self._dg_key_input.text().strip(),
+            "deepgram_model":     "nova-2",
             "llm_provider":       _provider,
             "llm_url":            self._llm_url_input.text().strip() or _default_url,
             "llm_model":          llm_model,
+            "groq_api_key":       self._groq_key_input.text().strip(),
             "tts_engine":         self._sel_tts,
             "tts_voice":          tts_voice,
             "tts_speed":          tts_speed,
             "elevenlabs_api_key": self._el_key_input.text().strip(),
+            "ollama_api_key":     self._ollama_key_input.text().strip(),
         }
+        if self._sel_tts == "elevenlabs" and hasattr(self, "_el_model_combo"):
+            cfg["tts_model"] = self._el_model_combo.currentData() or "eleven_turbo_v2_5"
         if self._sel_stt == "vosk" and stt_model:
             cfg["vosk_model_path"] = stt_model
         self.done.emit(json.dumps(cfg))

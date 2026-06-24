@@ -7,6 +7,7 @@ import re
 
 from core.llm_client import call_llm_text
 from core.logger import get_logger
+from core.tools import TOOL_NAMES
 
 log = get_logger("planner")
 
@@ -122,6 +123,9 @@ OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
   ]
 }
 """
+
+# Keep planner in sync with the canonical tool registry (core/tools.py).
+PLANNER_PROMPT += f"\n\nALL VALID TOOL NAMES:\n{', '.join(TOOL_NAMES)}\n"
 
 
 def create_plan(goal: str, context: str = "") -> dict:

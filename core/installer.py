@@ -45,8 +45,9 @@ _WINDOWS: list[tuple[str, str]] = [
 
 # STT engine packages
 _STT: dict[str, list[tuple[str, str]]] = {
-    "whisper": [("faster_whisper", "faster-whisper")],
-    "vosk":    [("vosk",           "vosk")],
+    "whisper":   [("faster_whisper", "faster-whisper")],
+    "vosk":      [("vosk",           "vosk")],
+    "deepgram":  [],   # uses requests only
 }
 
 # TTS engine packages

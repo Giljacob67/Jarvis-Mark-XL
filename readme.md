@@ -88,13 +88,17 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 ```json
 {
     "stt_engine":         "whisper",
-    "stt_model":          "base",
-    "stt_language":       "auto",
-    "llm_url":            "http://localhost:11434",
-    "llm_model":          "qwen2.5:7b",
-    "tts_engine":         "edgetts",
-    "tts_voice":          "en-US-GuyNeural",
-    "elevenlabs_api_key": ""
+    "stt_model":          "small",
+    "stt_language":       "pt",
+    "llm_provider":       "ollama_cloud",
+    "llm_url":            "https://ollama.com",
+    "llm_model":          "gpt-oss:120b-cloud",
+    "ollama_api_key":     "YOUR_OLLAMA_CLOUD_KEY",
+    "vision_model":       "llava:7b",
+    "tts_engine":         "elevenlabs",
+    "tts_voice":          "pNInz6obpgDQGcFmaJgB",
+    "elevenlabs_api_key": "YOUR_ELEVENLABS_KEY",
+    "allow_code_execution": false
 }
 ```
 
@@ -103,9 +107,11 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 | `stt_engine` | `whisper` / `vosk` | `whisper` |
 | `stt_model` | `tiny` / `base` / `small` / `medium` / `large-v3` | `base` |
 | `stt_language` | `auto` or ISO code (`tr`, `en`, `de` …) | `auto` |
-| `llm_url` | Ollama API base URL | `http://localhost:11434` |
-| `llm_model` | Any model pulled in Ollama | `qwen2.5:7b` |
-| `tts_engine` | `edgetts` / `kokoro` / `elevenlabs` | `edgetts` |
+| `llm_provider` | `ollama` / `ollama_cloud` / `openai` | `ollama_cloud` (first boot) |
+| `llm_url` | API base URL | `https://ollama.com` (cloud) |
+| `llm_model` | Model name | `gpt-oss:120b-cloud` |
+| `ollama_api_key` | Ollama Cloud bearer token | — |
+| `tts_engine` | `edgetts` / `kokoro` / `elevenlabs` | `elevenlabs` (first boot) |
 | `tts_voice` | Voice name / ID depending on engine | `en-US-GuyNeural` |
 
 ---

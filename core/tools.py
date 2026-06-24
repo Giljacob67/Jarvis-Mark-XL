@@ -481,6 +481,101 @@ TOOL_DECLARATIONS = [
             "required": ["expression"]
         }
     },
+    {
+        "name": "clipboard",
+        "description": (
+            "Read or write the system clipboard. Use for: copying text, reading "
+            "clipboard content, viewing clipboard history, pasting from history."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "read | write | clear | history | paste"},
+                "text":   {"type": "STRING", "description": "Text to copy (for write)"},
+                "index":  {"type": "INTEGER", "description": "History index (for paste)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "notify",
+        "description": (
+            "Show a desktop notification. Use for: alerts, reminders, status updates."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "title":   {"type": "STRING", "description": "Notification title"},
+                "message": {"type": "STRING", "description": "Notification body"},
+                "sound":   {"type": "BOOLEAN", "description": "Play sound (macOS only)"},
+            },
+            "required": ["message"]
+        }
+    },
+    {
+        "name": "app_installer",
+        "description": (
+            "Install or search packages via brew/winget/apt. "
+            "Use when the user asks to install software."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "install | search | list"},
+                "package": {"type": "STRING", "description": "Package or app name"},
+            },
+            "required": ["package"]
+        }
+    },
+    {
+        "name": "calendar",
+        "description": (
+            "List or create local calendar events. Use for: what's on my calendar, "
+            "schedule a meeting, add an event."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "list | create | add"},
+                "days":     {"type": "INTEGER", "description": "Days ahead to list (default 7)"},
+                "title":    {"type": "STRING", "description": "Event title (for create)"},
+                "start":    {"type": "STRING", "description": "Start datetime (for create)"},
+                "end":      {"type": "STRING", "description": "End datetime (for create)"},
+                "calendar": {"type": "STRING", "description": "Calendar name (optional)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "visual_web",
+        "description": (
+            "Autonomous visual web agent: screenshots the screen, plans UI actions, "
+            "and executes clicks/typing to complete a goal in any app or browser."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "goal": {"type": "STRING", "description": "What to accomplish on screen"},
+            },
+            "required": ["goal"]
+        }
+    },
+    {
+        "name": "smart_home",
+        "description": (
+            "Control TP-Link Kasa smart devices (lights, plugs). "
+            "Requires kasa_devices configured in api_keys.json."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "device": {"type": "STRING", "description": "Device alias or IP"},
+                "action": {"type": "STRING", "description": "on | off | toggle | status | brightness"},
+                "value":  {"type": "INTEGER", "description": "Brightness 0-100 (optional)"},
+            },
+            "required": ["device", "action"]
+        }
+    },
 ]
 
 

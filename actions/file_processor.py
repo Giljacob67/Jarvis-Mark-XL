@@ -88,8 +88,15 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
 
     if action in ("describe", "ocr", "analyze", "read", "extract_text"):
         try:
-            model  = _gemini_client()
-            img    = Image.open(path)
+            import io
+            from core.vision import analyze_image
+
+            img = Image.open(path).convert("RGB")
+            img.thumbnail((640, 360), Image.BILINEAR)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=60)
+            image_bytes = buf.getvalue()
+
             prompt = {
                 "describe": "Describe this image in detail.",
                 "ocr":      "Extract all text visible in this image. Return only the text, formatted clearly.",
@@ -101,8 +108,7 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
             if params.get("instruction"):
                 prompt = params["instruction"]
 
-            response = model.generate_content([prompt, img])
-            result   = response.text.strip()
+            result = analyze_image(image_bytes, prompt, mime="image/jpeg").strip()
 
             if len(result) > 500 and params.get("save", True):
                 out = _output_path(path, "result", ".txt")

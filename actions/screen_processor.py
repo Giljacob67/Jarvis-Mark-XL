@@ -5,7 +5,6 @@ The analysis text is returned (and optionally spoken via the `speak` callback).
 """
 from __future__ import annotations
 
-import base64
 import io
 import json
 from pathlib import Path
@@ -31,8 +30,6 @@ except ImportError:
     _PIL = False
 
 import platform
-
-import requests
 
 from core.paths import BASE_DIR as _BASE
 _CONFIG_PATH = _BASE / "config" / "api_keys.json"
@@ -172,42 +169,9 @@ def _capture_camera() -> tuple[bytes, str]:
 # Vision analysis via Ollama
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = (
-    "You are JARVIS, an advanced AI assistant. "
-    "Analyze the provided image with precision and intelligence. "
-    "Be concise and direct — maximum two sentences unless the user's question "
-    "requires more detail. "
-    "Address the user respectfully."
-)
-
-
 def _call_vision(image_bytes: bytes, mime: str, user_text: str) -> str:
-    cfg          = _load_config()
-    url          = cfg.get("llm_url", "http://localhost:11434").rstrip("/")
-    vision_model = cfg.get("vision_model") or cfg.get("llm_model", "llava")
-
-    b64 = base64.b64encode(image_bytes).decode("ascii")
-
-    payload = {
-        "model":  vision_model,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role":    "user",
-                "content": user_text,
-                "images":  [b64],
-            },
-        ],
-    }
-    try:
-        resp = requests.post(f"{url}/api/chat", json=payload, timeout=60)
-        resp.raise_for_status()
-        return (resp.json().get("message", {}).get("content") or "").strip()
-    except requests.exceptions.ConnectionError:
-        return "Cannot connect to Ollama. Make sure Ollama is running."
-    except Exception as e:
-        return f"Vision analysis failed: {e}"
+    from core.vision import analyze_image
+    return analyze_image(image_bytes, user_text, mime=mime)
 
 
 # ---------------------------------------------------------------------------

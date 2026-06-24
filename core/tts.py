@@ -335,18 +335,27 @@ class KokoroTTSEngine:
 
 
 class ElevenLabsTTSEngine:
-    """ElevenLabs cloud TTS – API key required."""
+    """ElevenLabs cloud TTS – API key required.
+
+    model_id options (set via tts_model in config):
+      eleven_turbo_v2_5   — fastest, great for assistants (recommended)
+      eleven_flash_v2_5   — even lower latency, slightly less expressive
+      eleven_multilingual_v2 — highest quality, slower
+    No extra toggle on the ElevenLabs website — just pass model_id in the API body.
+    """
 
     def __init__(
         self,
         api_key: str,
-        voice_id: str = "pNInz6obpgDQGcFmaJgB",
+        voice_id: str = "GIuLCSVfgJaUuh7hYOY8",
+        model_id: str = "eleven_turbo_v2_5",
         stability: float = 0.5,
         similarity_boost: float = 0.75,
         speed: float = 1.0,
     ):
         self.api_key  = api_key
         self.voice_id = voice_id
+        self.model_id = model_id or "eleven_turbo_v2_5"
         self.stability = stability
         self.similarity_boost = similarity_boost
         self.speed = speed
@@ -356,22 +365,29 @@ class ElevenLabsTTSEngine:
         headers = {
             "xi-api-key":   self.api_key,
             "Content-Type": "application/json",
+            "Accept":       "audio/mpeg",
         }
         payload = {
             "text":     text,
-            "model_id": "eleven_multilingual_v2",
+            "model_id": self.model_id,
             "voice_settings": {
-                "stability": self.stability,
+                "stability":        self.stability,
                 "similarity_boost": self.similarity_boost,
-                "speed": self.speed,
+                "speed":            self.speed,
             },
         }
+        # /stream returns chunked MP3 — starts playback sooner on longer sentences.
         resp = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
-            json=payload, headers=headers, timeout=30,
+            f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/stream",
+            json=payload, headers=headers, timeout=60, stream=True,
         )
         resp.raise_for_status()
-        _play_audio_bytes(resp.content)
+        chunks = bytearray()
+        for chunk in resp.iter_content(chunk_size=4096):
+            if chunk:
+                chunks.extend(chunk)
+        if chunks:
+            _play_audio_bytes(bytes(chunks))
 
 
 # ---------------------------------------------------------------------------
@@ -432,13 +448,15 @@ def create_tts_player(config: dict) -> TTSPlayer:
         engine = KokoroTTSEngine(voice=voice, speed=speed)
     elif engine_name == "elevenlabs":
         api_key          = config.get("elevenlabs_api_key", "")
-        voice_id         = config.get("tts_voice", "pNInz6obpgDQGcFmaJgB")
+        voice_id         = config.get("tts_voice", "GIuLCSVfgJaUuh7hYOY8")
+        model_id         = config.get("tts_model", "eleven_turbo_v2_5")
         stability        = float(config.get("tts_stability", 0.5))
         similarity_boost = float(config.get("tts_similarity_boost", 0.75))
         speed            = float(config.get("tts_speed", 1.0))
         engine = ElevenLabsTTSEngine(
             api_key=api_key,
             voice_id=voice_id,
+            model_id=model_id,
             stability=stability,
             similarity_boost=similarity_boost,
             speed=speed,

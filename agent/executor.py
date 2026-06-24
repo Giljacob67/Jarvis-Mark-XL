@@ -26,13 +26,9 @@ log = get_logger("executor")
 # ---------------------------------------------------------------------------
 
 def _load_exec_config() -> bool:
-    """Returns allow_generated_code_execution flag from config (default True)."""
-    config_path = BASE_DIR / "config" / "api_keys.json"
-    try:
-        cfg = json.loads(config_path.read_text(encoding="utf-8"))
-        return bool(cfg.get("allow_generated_code_execution", True))
-    except Exception:
-        return True
+    """Returns allow_code_execution flag from config (default False — fail closed)."""
+    from core.security import code_execution_allowed
+    return code_execution_allowed()
 
 
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
@@ -89,7 +85,7 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         if not allow_exec:
             msg = (
                 f"Code written to {audit_path} — auto-execution disabled. "
-                "Set allow_generated_code_execution=true in config to enable, sir."
+                'Set "allow_code_execution": true in config/api_keys.json to enable, sir.'
             )
             if speak:
                 speak("Code saved to JarvisGeneratedCode for your review, sir.")

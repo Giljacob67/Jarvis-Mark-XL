@@ -89,6 +89,9 @@ if _sys.platform == "darwin":
 from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
 from core.llm_client import call_llm, call_llm_stream, get_llm_settings
+from core.logger import get_logger
+
+log = get_logger("jarvis")
 
 from actions.file_processor    import file_processor
 from actions.flight_finder     import flight_finder
@@ -484,6 +487,13 @@ class JarvisLocal:
                 if new_stt_engine == "vosk":
                     from core.stt import VoskSTT
                     self._stt = VoskSTT(new_config.get("vosk_model_path"), language=stt_language)
+                elif new_stt_engine == "deepgram":
+                    from core.stt_deepgram import DeepgramSTT
+                    self._stt = DeepgramSTT(
+                        api_key=new_config.get("deepgram_api_key"),
+                        model=new_config.get("deepgram_model", "nova-2"),
+                        language=stt_language,
+                    )
                 else:
                     from core.stt import WhisperSTT
                     self._stt = WhisperSTT(new_config.get("stt_model", "base"), language=stt_language)
@@ -1002,7 +1012,7 @@ class JarvisLocal:
                                             self._process_message(command)
                                         else:
                                             self.ui.write_log(f"WAKE: '{text}' (no command)")
-                                            self.speak("Sim?")
+                                            self.speak("Yes, sir?")
                                     else:
                                         self.ui.write_log(f"SKIP: '{text}' (no wake word)")
                     except queue.Empty:
@@ -1089,12 +1099,16 @@ class JarvisLocal:
             self.ui.on_reconfigure = self.reconfigure
 
             # ── Ollama ────────────────────────────────────────────────────
-            from core.llm_client import ensure_ollama_running, warmup_model
-            self.ui.write_log("SYS: Checking Ollama…")
+            from core.llm_client import ensure_ollama_running, warmup_model, get_llm_provider, _provider_label
+            _prov = get_llm_provider()
+            self.ui.write_log(f"SYS: Checking {_provider_label(_prov)}…")
             if ensure_ollama_running():
-                self.ui.write_log("SYS: Ollama OK.")
+                self.ui.write_log(f"SYS: {_provider_label(_prov)} OK.")
             else:
-                self.ui.write_log("ERR: Ollama unavailable — run: ollama serve")
+                if _prov == "ollama":
+                    self.ui.write_log("ERR: Ollama unavailable — run: ollama serve")
+                else:
+                    self.ui.write_log(f"ERR: {_provider_label(_prov)} unreachable — check API key / URL")
 
             # ── Config ────────────────────────────────────────────────────
             stt_engine   = self._config.get("stt_engine",   "whisper").lower()
@@ -1133,6 +1147,13 @@ class JarvisLocal:
                         from core.stt import VoskSTT
                         self._stt = VoskSTT(
                             self._config.get("vosk_model_path"),
+                            language=stt_language,
+                        )
+                    elif stt_engine == "deepgram":
+                        from core.stt_deepgram import DeepgramSTT
+                        self._stt = DeepgramSTT(
+                            api_key=self._config.get("deepgram_api_key"),
+                            model=self._config.get("deepgram_model", "nova-2"),
                             language=stt_language,
                         )
                     else:
