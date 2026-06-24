@@ -271,9 +271,28 @@ class JarvisLocal:
     WAKE_WORD = "jarvis"
     WAKE_WORD_VARIANTS = [
         "jarvis", "járvis", "jarviz", "jarvys", "jarviss", "jarves", "jarvi",
-        # Common Whisper misrecognitions of "Jarvis":
+        # Common STT misrecognitions (EN + PT-BR):
         "travis", "trevis", "tarvis", "jarvist", "jarvas",
+        "james", "jarmes", "jarmis", "germes", "jarves", "djervis", "jervis",
+        "jarviso", "jarviz", "charvis", "yarvis",
     ]
+
+    # Only attach tool schema when the user likely wants an action (Groq chokes on 32 tools for "oi").
+    _ACTION_RE = re.compile(
+        r"(?i)\b("
+        r"abr[ae]|open|launch|lanc|inici|execut|"
+        r"pesquis|busca|search|googl|"
+        r"envi|mand|messag|whatsapp|telegram|email|"
+        r"timer|alarm|lembret|remind|"
+        r"tempo|weather|clima|"
+        r"youtube|spotify|music|"
+        r"tela|screen|camera|webcam|"
+        r"arquiv|file|past|"
+        r"calend|agend|"
+        r"instal|download|"
+        r"calcul|traduz|nota|clipboard|copi"
+        r")\w*"
+    )
 
     def __init__(self, ui: JarvisUI):
         self.ui               = ui
@@ -286,6 +305,7 @@ class JarvisLocal:
         self._text_queue:     queue.Queue = queue.Queue()
         self._tts_queue:      queue.Queue = queue.Queue()
         self._conversation:   list[dict]  = []
+        self._turn_lock       = threading.Lock()
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -361,7 +381,7 @@ class JarvisLocal:
                 difflib.SequenceMatcher(None, word, v).ratio()
                 for v in self.WAKE_WORD_VARIANTS
             )
-            if score >= 0.8:
+            if score >= 0.72:
                 # Rebuild the command from the original-cased words after the match.
                 command = " ".join(text.split()[i + 1:]).strip()
                 if command and command[0] in ",.!?;:":
@@ -802,6 +822,10 @@ class JarvisLocal:
     # LLM processing loop
     # ------------------------------------------------------------------
 
+    def _needs_tools(self, user_text: str) -> bool:
+        """Skip tool schema for casual chat — prevents Groq tool_use_failed errors."""
+        return bool(self._ACTION_RE.search(user_text))
+
     def _process_message(self, user_text: str) -> None:
         """
         Full turn: user_text → LLM stream → TTS (overlapped) → tool execution
@@ -815,6 +839,10 @@ class JarvisLocal:
         only kicks in for pure conversational replies — which is exactly when
         it matters most.
         """
+        with self._turn_lock:
+            self._process_message_locked(user_text)
+
+    def _process_message_locked(self, user_text: str) -> None:
         self.ui.set_state("THINKING")
         self.ui.write_log(f"You: {user_text}")
         self.ui.add_history("user", user_text)
@@ -838,6 +866,8 @@ class JarvisLocal:
         _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task"}
 
         MAX_TOOL_ROUNDS = 6
+        tools_for_turn = OLLAMA_TOOLS if self._needs_tools(user_text) else None
+
         for _round in range(MAX_TOOL_ROUNDS):
             final_content    = ""
             final_tool_calls: list = []
@@ -845,8 +875,11 @@ class JarvisLocal:
             # for tool-call rounds where the model emits no content).
             _streamed: list[str] = []
 
+            # After tool execution, always re-enable tools for follow-up rounds.
+            round_tools = tools_for_turn if _round == 0 else OLLAMA_TOOLS
+
             try:
-                for event in call_llm_stream(messages, OLLAMA_TOOLS):
+                for event in call_llm_stream(messages, round_tools):
                     if event["type"] == "sentence":
                         # ── Overlap TTS with LLM generation ─────────────────
                         # Queue this sentence immediately; the TTS worker
@@ -984,6 +1017,10 @@ class JarvisLocal:
                 self.speak(_reply)
                 break
 
+        # Fell through all rounds with no spoken reply
+        self.ui.write_log("ERR: LLM — empty response after all rounds")
+        self.speak("Desculpe senhor, tive um problema ao processar. Pode repetir?")
+
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
@@ -1014,7 +1051,8 @@ class JarvisLocal:
                 callback=callback,
             ):
                 mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
-                self.ui.write_log(f"SYS: Mic active (Whisper STT) — {mode_label}")
+                stt_label  = self._config.get("stt_engine", "whisper").upper()
+                self.ui.write_log(f"SYS: Mic active ({stt_label} STT) — {mode_label}")
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)

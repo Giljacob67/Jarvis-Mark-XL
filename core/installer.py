@@ -30,6 +30,7 @@ _CORE: list[tuple[str, str]] = [
     ("cv2",                "opencv-python"),
     ("soundfile",          "soundfile"),
     ("miniaudio",          "miniaudio"),
+    ("flask",              "flask"),
     ("send2trash",         "send2trash"),
     ("pptx",               "python-pptx"),
     ("youtube_transcript_api", "youtube-transcript-api"),

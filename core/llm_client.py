@@ -118,6 +118,17 @@ def _get_fallback_model() -> str:
     return _load_config().get("llm_fallback_model", "").strip()
 
 
+def _is_tool_use_error(response: requests.Response) -> bool:
+    """Groq returns 400 with code tool_use_failed when tools confuse the model."""
+    if response.status_code not in (400, 422):
+        return False
+    try:
+        code = response.json().get("error", {}).get("code", "")
+        return code in ("tool_use_failed", "invalid_request_error")
+    except Exception:
+        return response.status_code == 400
+
+
 def _is_model_not_found(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(k in msg for k in ("not found", "pull the model", "model", "404", "doesn't exist"))
@@ -539,21 +550,46 @@ def call_llm_stream(
     if _is_openai_compat(provider):
         endpoint = _openai_chat_url(url)
         headers  = _get_auth_headers(provider)
-        payload: dict = {
-            "model": model, "messages": messages,
-            "stream": True, "max_tokens": _STREAM_MAX_TOKENS,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        try:
+
+        def _do_stream(model_name: str, use_tools: bool) -> Generator[dict, None, None]:
+            payload: dict = {
+                "model": model_name, "messages": messages,
+                "stream": True, "max_tokens": _STREAM_MAX_TOKENS,
+            }
+            if use_tools and tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
             yield from _stream_sse(url, endpoint, payload, headers, timeout, provider, provider)
+
+        try:
+            yield from _do_stream(model, bool(tools))
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            fb     = _get_fallback_model()
+
+            # Rate limit → smaller fallback model, no tools
+            if status == 429 and fb and fb != model:
+                log.warning("Rate limited on '%s' — retrying with '%s'", model, fb)
+                try:
+                    yield from _do_stream(fb, False)
+                    return
+                except Exception:
+                    pass
+
+            # Groq tool schema failure → retry without tools (same model)
+            if tools and e.response is not None and _is_tool_use_error(e.response):
+                log.warning("Tool call failed on %s — retrying without tools", provider)
+                try:
+                    yield from _do_stream(model, False)
+                    return
+                except Exception:
+                    pass
+
+            raise RuntimeError(f"{provider} HTTP error: {status}") from e
         except requests.exceptions.ConnectionError:
             raise RuntimeError(f"Cannot reach {_provider_label(provider)} at {url}.")
         except requests.exceptions.Timeout:
             raise RuntimeError(f"{provider} stream timed out.")
-        except requests.exceptions.HTTPError as e:
-            raise RuntimeError(f"{provider} HTTP error: {e.response.status_code}")
         except Exception as e:
             raise RuntimeError(f"{provider} stream failed: {e}")
         return
