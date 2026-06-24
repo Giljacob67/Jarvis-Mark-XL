@@ -139,29 +139,35 @@ class DeepgramLiveSTT:
         self._ws = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
+        self._connect_err: str | None = None
+        self._connected = False
         self._closed = False
         self._utterance_start: float | None = None
         log.info("Deepgram live ready (model=%s, lang=%s)", self._model, self._language)
 
     def _build_url(self) -> str:
+        # utterance_end_ms must be >= 1000 (Deepgram returns 400 otherwise).
         q = urlencode({
-            "model":           self._model,
-            "language":        self._language,
-            "encoding":        "linear16",
-            "sample_rate":     self._sample_rate,
-            "channels":        1,
-            "interim_results": "true",
-            "endpointing":     280,
-            "utterance_end_ms": 700,
-            "punctuate":       "true",
-            "smart_format":    "false",
+            "model":            self._model,
+            "language":         self._language,
+            "encoding":         "linear16",
+            "sample_rate":      self._sample_rate,
+            "channels":         1,
+            "interim_results":  "true",
+            "endpointing":      300,
+            "utterance_end_ms": 1000,
+            "punctuate":        "true",
         })
         return f"wss://api.deepgram.com/v1/listen?{q}"
 
-    def start(self) -> None:
+    def start(self, timeout: float = 15) -> None:
         import websocket
 
+        self._ready.clear()
+        self._connect_err = None
+
         def _on_open(ws) -> None:
+            self._connected = True
             self._ready.set()
             log.debug("Deepgram live socket open")
 
@@ -190,10 +196,13 @@ class DeepgramLiveSTT:
                 self._on_final(text, stt_ms)
 
         def _on_error(ws, err) -> None:
+            self._connect_err = str(err)
             log.warning("Deepgram live error: %s", err)
 
         def _on_close(ws, code, msg) -> None:
             log.debug("Deepgram live closed (%s): %s", code, msg)
+            if not self._connected and msg:
+                self._connect_err = str(msg)
             self._ready.clear()
 
         self._ws = websocket.WebSocketApp(
@@ -210,8 +219,11 @@ class DeepgramLiveSTT:
             name="deepgram-live",
         )
         self._thread.start()
-        if not self._ready.wait(timeout=8):
-            raise RuntimeError("Deepgram live WebSocket did not connect in time")
+        if not self._ready.wait(timeout=timeout):
+            detail = self._connect_err or "no response from server"
+            raise RuntimeError(
+                f"Deepgram live WebSocket did not connect: {detail}"
+            )
 
     def feed(self, pcm_int16: bytes) -> None:
         """Send raw int16 mono PCM to the live stream."""

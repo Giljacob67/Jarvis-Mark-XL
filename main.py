@@ -1124,14 +1124,19 @@ class JarvisLocal:
                 _last_interim = transcript
                 self.ui.write_log(f"SYS: 🎤 …{transcript[-40:]}")
 
-        live = DeepgramLiveSTT(
-            on_final=_on_final,
-            on_interim=_on_interim,
-            api_key=self._config.get("deepgram_api_key"),
-            model=self._config.get("deepgram_model", "nova-2"),
-            language=self._config.get("stt_language", "pt"),
-        )
-        live.start()
+        try:
+            live = DeepgramLiveSTT(
+                on_final=_on_final,
+                on_interim=_on_interim,
+                api_key=self._config.get("deepgram_api_key"),
+                model=self._config.get("deepgram_model", "nova-2"),
+                language=self._config.get("stt_language", "pt"),
+            )
+            live.start()
+        except Exception as e:
+            self.ui.write_log(f"WARN: Deepgram live failed ({e}) — using batch STT")
+            self._listen_whisper()
+            return
 
         def callback(indata, frames, time_info, status):
             if not self._mic_blocked() and not self.ui.muted:
