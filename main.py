@@ -189,7 +189,7 @@ class _VADBuffer:
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 1.5,    # silence after last word → send to STT
+        silence_sec:    float = 0.85,   # silence after last word → send to STT
         speech_thresh:  float = 0.008,  # RMS above this = speech
         silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
         min_speech_sec: float = 0.3,
@@ -866,7 +866,13 @@ class JarvisLocal:
         _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task"}
 
         MAX_TOOL_ROUNDS = 6
-        tools_for_turn = OLLAMA_TOOLS if self._needs_tools(user_text) else None
+        needs_tools    = self._needs_tools(user_text)
+        tools_for_turn = OLLAMA_TOOLS if needs_tools else None
+
+        from core.llm_client import get_fast_llm_model, get_power_llm_model
+        llm_model = get_power_llm_model() if needs_tools else get_fast_llm_model()
+
+        _t0 = time.time()
 
         for _round in range(MAX_TOOL_ROUNDS):
             final_content    = ""
@@ -879,8 +885,15 @@ class JarvisLocal:
             round_tools = tools_for_turn if _round == 0 else OLLAMA_TOOLS
 
             try:
-                for event in call_llm_stream(messages, round_tools):
+                _round_model = llm_model if _round == 0 else get_power_llm_model()
+                for event in call_llm_stream(
+                    messages, round_tools,
+                    model=_round_model,
+                ):
                     if event["type"] == "sentence":
+                        if _round == 0 and not _streamed:
+                            _lat = int((time.time() - _t0) * 1000)
+                            self.ui.write_log(f"SYS: ⚡ first token {_lat}ms")
                         # ── Overlap TTS with LLM generation ─────────────────
                         # Queue this sentence immediately; the TTS worker
                         # synthesises it while the LLM is still generating

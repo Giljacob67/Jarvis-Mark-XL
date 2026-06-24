@@ -87,6 +87,27 @@ def _play_np(samples, sample_rate: int) -> None:
     sd.wait()
 
 
+def _play_pcm_stream(response, sample_rate: int = 24_000) -> None:
+    """Play raw int16 PCM from a streaming HTTP response as chunks arrive."""
+    import requests as _req
+    if not isinstance(response, _req.Response):
+        return
+    leftover = b""
+    with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16") as stream:
+        for chunk in response.iter_content(chunk_size=8192):
+            if not chunk:
+                continue
+            data = leftover + chunk
+            # int16 needs even byte count
+            trim = len(data) - (len(data) % 2)
+            if trim <= 0:
+                leftover = data
+                continue
+            pcm = np.frombuffer(data[:trim], dtype=np.int16)
+            stream.write(pcm)
+            leftover = data[trim:]
+
+
 def _play_audio_bytes(audio_bytes: bytes) -> None:
     """Decode MP3/WAV/OGG bytes and play via sounddevice (uses miniaudio)."""
     import miniaudio
@@ -365,7 +386,6 @@ class ElevenLabsTTSEngine:
         headers = {
             "xi-api-key":   self.api_key,
             "Content-Type": "application/json",
-            "Accept":       "audio/mpeg",
         }
         payload = {
             "text":     text,
@@ -376,18 +396,21 @@ class ElevenLabsTTSEngine:
                 "speed":            self.speed,
             },
         }
-        # /stream returns chunked MP3 — starts playback sooner on longer sentences.
+        # PCM + optimize_streaming_latency=4 → first audio in ~300ms (no full MP3 wait).
+        params = {
+            "output_format":              "pcm_24000",
+            "optimize_streaming_latency": "4",
+        }
         resp = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/stream",
-            json=payload, headers=headers, timeout=60, stream=True,
+            params=params,
+            json=payload,
+            headers=headers,
+            timeout=60,
+            stream=True,
         )
         resp.raise_for_status()
-        chunks = bytearray()
-        for chunk in resp.iter_content(chunk_size=4096):
-            if chunk:
-                chunks.extend(chunk)
-        if chunks:
-            _play_audio_bytes(bytes(chunks))
+        _play_pcm_stream(resp, sample_rate=24_000)
 
 
 # ---------------------------------------------------------------------------

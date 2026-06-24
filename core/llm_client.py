@@ -52,8 +52,9 @@ _DEFAULTS = {
     "llm_fallback_model":  "",
 }
 
-# Token budget — cloud models need headroom for tool calls + reasoning.
+# Token budget — chat uses a small cap for speed; tool rounds need headroom.
 _STREAM_MAX_TOKENS = 1024
+_STREAM_CHAT_TOKENS = 180
 _CHAT_MAX_TOKENS   = 1024
 
 
@@ -81,6 +82,22 @@ def _load_config() -> dict:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def get_fast_llm_model() -> str:
+    """Fast model for casual chat (low latency). Falls back to llm_model."""
+    cfg = _load_config()
+    return (
+        cfg.get("llm_fast_model", "").strip()
+        or cfg.get("llm_fallback_model", "").strip()
+        or cfg.get("llm_model", _DEFAULTS["llm_model"])
+    )
+
+
+def get_power_llm_model() -> str:
+    """Powerful model for tool-calling / complex tasks."""
+    cfg = _load_config()
+    return cfg.get("llm_power_model", "").strip() or cfg.get("llm_model", _DEFAULTS["llm_model"])
 
 
 def get_llm_settings() -> tuple[str, str]:
@@ -536,6 +553,8 @@ def call_llm_stream(
     messages: list,
     tools:    list | None = None,
     timeout:  int = 120,
+    model:    str | None = None,
+    max_tokens: int | None = None,
 ) -> Generator[dict, None, None]:
     """
     Streaming chat request.  Routes to Ollama, Ollama Cloud, or OpenAI-compatible.
@@ -544,17 +563,21 @@ def call_llm_stream(
         {"type": "sentence", "text": str}          — each complete sentence
         {"type": "done", "content": str, "tool_calls": list}  — stream end
     """
-    url, model = get_llm_settings()
-    provider   = get_llm_provider()
+    url, default_model = get_llm_settings()
+    model    = model or default_model
+    provider = get_llm_provider()
+    tok_cap  = max_tokens if max_tokens is not None else (
+        _STREAM_MAX_TOKENS if tools else _STREAM_CHAT_TOKENS
+    )
 
     if _is_openai_compat(provider):
         endpoint = _openai_chat_url(url)
         headers  = _get_auth_headers(provider)
 
-        def _do_stream(model_name: str, use_tools: bool) -> Generator[dict, None, None]:
+        def _do_stream(model_name: str, use_tools: bool, token_limit: int) -> Generator[dict, None, None]:
             payload: dict = {
                 "model": model_name, "messages": messages,
-                "stream": True, "max_tokens": _STREAM_MAX_TOKENS,
+                "stream": True, "max_tokens": token_limit,
             }
             if use_tools and tools:
                 payload["tools"] = tools
@@ -562,7 +585,7 @@ def call_llm_stream(
             yield from _stream_sse(url, endpoint, payload, headers, timeout, provider, provider)
 
         try:
-            yield from _do_stream(model, bool(tools))
+            yield from _do_stream(model, bool(tools), tok_cap)
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
             fb     = _get_fallback_model()
@@ -571,7 +594,7 @@ def call_llm_stream(
             if status == 429 and fb and fb != model:
                 log.warning("Rate limited on '%s' — retrying with '%s'", model, fb)
                 try:
-                    yield from _do_stream(fb, False)
+                    yield from _do_stream(fb, False, _STREAM_CHAT_TOKENS)
                     return
                 except Exception:
                     pass
@@ -580,7 +603,7 @@ def call_llm_stream(
             if tools and e.response is not None and _is_tool_use_error(e.response):
                 log.warning("Tool call failed on %s — retrying without tools", provider)
                 try:
-                    yield from _do_stream(model, False)
+                    yield from _do_stream(model, False, _STREAM_CHAT_TOKENS)
                     return
                 except Exception:
                     pass
