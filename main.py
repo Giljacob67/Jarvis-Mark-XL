@@ -196,7 +196,7 @@ class _VADBuffer:
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 0.85,   # silence after last word → send to STT
+        silence_sec:    float = 0.45,   # silence after last word → send to STT
         speech_thresh:  float = 0.008,  # RMS above this = speech
         silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
         min_speech_sec: float = 0.3,
@@ -280,10 +280,14 @@ class JarvisLocal:
         "jarvis", "járvis", "jarviz", "jarvys", "jarviss", "jarves", "jarvi",
         # Common STT misrecognitions (EN + PT-BR):
         "travis", "trevis", "tarvis", "jarvist", "jarvas",
-        "james", "jarmes", "jarmis", "germes", "jarves", "djervis", "jervis",
-        "jarviso", "jarviz", "charvis", "yarvis",
-        "escuta", "na escuta", "olá jarvis", "oi jarvis",
+        "james", "jarmes", "jarmis", "germes", "djervis", "jervis",
+        "jarviso", "charvis", "yarvis",
+        "olá jarvis", "oi jarvis",
     ]
+    # PT-BR prefixes — exact start match only (no fuzzy; avoids "estar"≈"escuta")
+    WAKE_PREFIX_VARIANTS = ["escuta", "na escuta"]
+    _WAKE_FUZZY_MIN_LEN = 5
+    _WAKE_FUZZY_THRESHOLD = 0.82
 
     # Only attach tool schema when the user likely wants an action (Groq chokes on 32 tools for "oi").
     _ACTION_RE = re.compile(
@@ -315,6 +319,7 @@ class JarvisLocal:
         self._conversation:   list[dict]  = []
         self._turn_lock       = threading.Lock()
         self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
+        self._stt_executor        = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -352,6 +357,15 @@ class JarvisLocal:
         
         text_lower = text.lower().strip()
         
+        for variant in self.WAKE_PREFIX_VARIANTS:
+            for pattern in (f"{variant},", f"{variant} ", f"{variant}!", f"{variant}?"):
+                if text_lower.startswith(pattern):
+                    command = text[len(pattern):].strip()
+                    return True, command
+            if text_lower.startswith(variant):
+                command = text[len(variant):].strip().lstrip(",.!?;:")
+                return True, command
+
         # Check for wake word variants
         for variant in self.WAKE_WORD_VARIANTS:
             # Look for wake word at the beginning or after a pause
@@ -391,13 +405,13 @@ class JarvisLocal:
         import difflib
         words = [w.strip(",.!?;:") for w in text_lower.split()]
         for i, word in enumerate(words[:3]):
-            if not word:
+            if not word or len(word) < self._WAKE_FUZZY_MIN_LEN:
                 continue
             score = max(
                 difflib.SequenceMatcher(None, word, v).ratio()
                 for v in self.WAKE_WORD_VARIANTS
             )
-            if score >= 0.72:
+            if score >= self._WAKE_FUZZY_THRESHOLD:
                 # Rebuild the command from the original-cased words after the match.
                 command = " ".join(text.split()[i + 1:]).strip()
                 if command and command[0] in ",.!?;:":
@@ -460,7 +474,7 @@ class JarvisLocal:
                 if self._tts_queue.empty():
                     with self._speaking_lock:
                         self._speaking = False
-                    self._listen_blocked_until = time.time() + 1.5
+                    self._listen_blocked_until = time.time() + 4.0
                     if not self.ui.muted:
                         self.ui.set_state("LISTENING")
 
@@ -841,7 +855,7 @@ class JarvisLocal:
         """Skip tool schema for casual chat — prevents Groq tool_use_failed errors."""
         return bool(self._ACTION_RE.search(user_text))
 
-    def _process_message(self, user_text: str) -> None:
+    def _process_message(self, user_text: str, *, from_voice: bool = False) -> None:
         """
         Full turn: user_text → LLM stream → TTS (overlapped) → tool execution
 
@@ -855,11 +869,12 @@ class JarvisLocal:
         it matters most.
         """
         with self._turn_lock:
-            self._process_message_locked(user_text)
+            self._process_message_locked(user_text, from_voice=from_voice)
 
-    def _process_message_locked(self, user_text: str) -> None:
+    def _process_message_locked(self, user_text: str, *, from_voice: bool = False) -> None:
         self.ui.set_state("THINKING")
-        self.ui.write_log(f"You: {user_text}")
+        prefix = "Voz" if from_voice else "You"
+        self.ui.write_log(f"{prefix}: {user_text}")
         self.ui.add_history("user", user_text)
 
         self._conversation.append({"role": "user", "content": user_text})
@@ -919,9 +934,10 @@ class JarvisLocal:
                             _route = chat_provider if _use_chat_route else "power"
                             self.ui.write_log(f"SYS: ⚡ first token {_lat}ms ({_route})")
                     elif event["type"] == "sentence":
-                        # ── Overlap TTS with LLM generation ─────────────────
+                        # Voice: speak only the first sentence (faster turn-around).
+                        if not from_voice or not _streamed:
+                            self.speak(event["text"])
                         _streamed.append(event["text"])
-                        self.speak(event["text"])
                         self.ui.stream_sentence(event["text"])
                     elif event["type"] == "done":
                         final_content    = event["content"]
@@ -1064,10 +1080,92 @@ class JarvisLocal:
     # STT listening loops
     # ------------------------------------------------------------------
 
+    def _handle_voice_transcript(self, text: str, stt_ms: float = 0) -> None:
+        """Route a finalized voice transcript through wake-word logic."""
+        text = text.strip()
+        if not text:
+            return
+        if self._mic_blocked():
+            self.ui.write_log(f"SKIP: '{text}' (echo guard)")
+            return
+
+        if stt_ms > 0:
+            self.ui.write_log(f"SYS: 🎤 STT {int(stt_ms)}ms")
+
+        if self._continuous_mode:
+            self.ui.write_log(f"USER: '{text}'")
+            self._process_message(text, from_voice=True)
+            return
+
+        is_wake, command = self._check_wake_word(text)
+        if is_wake:
+            if command:
+                self.ui.write_log(f"WAKE: '{text}' → '{command}'")
+                self._process_message(command, from_voice=True)
+            else:
+                self.ui.write_log(f"WAKE: '{text}' (aguardando comando)")
+                self.speak("Sim?")
+        else:
+            self.ui.write_log(f"SKIP: '{text}' (sem wake word)")
+
+    def _listen_deepgram(self) -> None:
+        """Mic → Deepgram live WebSocket → Wake Word → LLM (lowest latency)."""
+        from core.stt_deepgram import DeepgramLiveSTT
+
+        _last_interim = ""
+        _voice_q: queue.Queue = queue.Queue()
+
+        def _on_final(transcript: str, stt_ms: float) -> None:
+            _voice_q.put((transcript, stt_ms))
+
+        def _on_interim(transcript: str) -> None:
+            nonlocal _last_interim
+            if transcript != _last_interim and len(transcript) > 3:
+                _last_interim = transcript
+                self.ui.write_log(f"SYS: 🎤 …{transcript[-40:]}")
+
+        live = DeepgramLiveSTT(
+            on_final=_on_final,
+            on_interim=_on_interim,
+            api_key=self._config.get("deepgram_api_key"),
+            model=self._config.get("deepgram_model", "nova-2"),
+            language=self._config.get("stt_language", "pt"),
+        )
+        live.start()
+
+        def callback(indata, frames, time_info, status):
+            if not self._mic_blocked() and not self.ui.muted:
+                live.feed_float(indata.flatten())
+
+        try:
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE_IN,
+                channels=CHANNELS,
+                dtype="float32",
+                blocksize=BLOCK_SIZE,
+                callback=callback,
+            ):
+                mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
+                self.ui.write_log(
+                    f"SYS: Mic active (DEEPGRAM LIVE) — {mode_label}"
+                )
+                while True:
+                    try:
+                        transcript, stt_ms = _voice_q.get(timeout=0.05)
+                        self._handle_voice_transcript(transcript, stt_ms)
+                    except queue.Empty:
+                        pass
+        except Exception as e:
+            print(f"[STT-Deepgram] Mic error: {e}")
+            traceback.print_exc()
+        finally:
+            live.close()
+
     def _listen_whisper(self) -> None:
-        """Mic → VAD → Whisper → Wake Word Check → LLM loop."""
+        """Mic → VAD → Whisper/Deepgram batch → Wake Word Check → LLM loop."""
         vad = _VADBuffer()
         q: queue.Queue = queue.Queue(maxsize=200)
+        _stt_busy = threading.Event()
 
         def callback(indata, frames, time_info, status):
             if not self._mic_blocked() and not self.ui.muted:
@@ -1075,6 +1173,18 @@ class JarvisLocal:
                     q.put_nowait(indata.copy())
                 except queue.Full:
                     pass
+
+        def _run_stt(audio: np.ndarray, t0: float) -> None:
+            try:
+                if self._stt is None:
+                    return
+                text = self._stt.transcribe(audio)
+                stt_ms = (time.time() - t0) * 1000
+                self._handle_voice_transcript(text, stt_ms)
+            except Exception as e:
+                self.ui.write_log(f"ERR: STT — {e}")
+            finally:
+                _stt_busy.clear()
 
         try:
             with sd.InputStream(
@@ -1091,29 +1201,11 @@ class JarvisLocal:
                     try:
                         chunk = q.get(timeout=0.1)
                         audio = vad.process(chunk.flatten())
-                        if audio is not None:
-                            if self._stt is None:
-                                self.ui.set_state("IDLE")
-                                continue   # STT failed to load — don't crash the loop
+                        if audio is not None and not _stt_busy.is_set():
+                            _stt_busy.set()
                             self.ui.set_state("THINKING")
-                            text = self._stt.transcribe(audio)
-                            if text.strip():
-                                if self._continuous_mode:
-                                    # Continuous mode: process everything directly
-                                    self.ui.write_log(f"USER: '{text}'")
-                                    self._process_message(text)
-                                else:
-                                    # Wake word mode: check for wake word
-                                    is_wake, command = self._check_wake_word(text)
-                                    if is_wake:
-                                        if command:
-                                            self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
-                                            self._process_message(command)
-                                        else:
-                                            self.ui.write_log(f"WAKE: '{text}' (no command)")
-                                            self.speak("Yes, sir?")
-                                    else:
-                                        self.ui.write_log(f"SKIP: '{text}' (no wake word)")
+                            t0 = time.time()
+                            self._stt_executor.submit(_run_stt, audio, t0)
                     except queue.Empty:
                         pass
         except Exception as e:
@@ -1146,20 +1238,7 @@ class JarvisLocal:
                         chunk = q.get(timeout=0.1)
                         text, is_final = self._stt.process_chunk(chunk.tobytes())
                         if is_final and text.strip():
-                            if self._continuous_mode:
-                                self.ui.write_log(f"USER: '{text}'")
-                                self._process_message(text)
-                            else:
-                                is_wake, command = self._check_wake_word(text)
-                                if is_wake:
-                                    if command:
-                                        self.ui.write_log(f"WAKE: '{text}' → Command: '{command}'")
-                                        self._process_message(command)
-                                    else:
-                                        self.ui.write_log(f"WAKE: '{text}' (no command)")
-                                        self.speak("Sim?")
-                                else:
-                                    self.ui.write_log(f"SKIP: '{text}' (no wake word)")
+                            self._handle_voice_transcript(text)
                     except queue.Empty:
                         pass
         except Exception as e:
@@ -1326,6 +1405,8 @@ class JarvisLocal:
             # STT loop — blocks this thread forever
             if stt_engine == "vosk":
                 self._listen_vosk()
+            elif stt_engine == "deepgram":
+                self._listen_deepgram()
             else:
                 self._listen_whisper()
 
