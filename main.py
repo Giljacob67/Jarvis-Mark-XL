@@ -275,6 +275,7 @@ class JarvisLocal:
         "travis", "trevis", "tarvis", "jarvist", "jarvas",
         "james", "jarmes", "jarmis", "germes", "jarves", "djervis", "jervis",
         "jarviso", "jarviz", "charvis", "yarvis",
+        "escuta", "na escuta", "olá jarvis", "oi jarvis",
     ]
 
     # Only attach tool schema when the user likely wants an action (Groq chokes on 32 tools for "oi").
@@ -910,21 +911,16 @@ class JarvisLocal:
 
             # ── No tool calls: pure conversational reply ─────────────────────
             if not final_tool_calls:
-                if _streamed:
-                    # Sentences already shown in log via stream_sentence — skip full write_log.
-                    assistant_msg = {"role": "assistant", "content": final_content}
+                reply = final_content or (" ".join(_streamed) if _streamed else "")
+                if reply:
+                    assistant_msg = {"role": "assistant", "content": reply}
                     messages.append(assistant_msg)
                     self._conversation.append(assistant_msg)
-                    self.ui.add_history("jarvis", final_content)
-                elif final_content:
-                    # Very short response (no sentence boundary) — speak now.
-                    assistant_msg = {"role": "assistant", "content": final_content}
-                    messages.append(assistant_msg)
-                    self._conversation.append(assistant_msg)
-                    self.ui.write_log(f"Jarvis: {final_content}")
-                    self.ui.add_history("jarvis", final_content)
-                    self._persist_assistant(final_content)
-                    self.speak(final_content)
+                    if not _streamed:
+                        self.ui.write_log(f"Jarvis: {reply}")
+                        self.speak(reply)
+                    self.ui.add_history("jarvis", reply)
+                    self._persist_assistant(reply)
                 break
 
             # ── Tool calls present ────────────────────────────────────────────
@@ -1030,9 +1026,10 @@ class JarvisLocal:
                 self.speak(_reply)
                 break
 
-        # Fell through all rounds with no spoken reply
-        self.ui.write_log("ERR: LLM — empty response after all rounds")
-        self.speak("Desculpe senhor, tive um problema ao processar. Pode repetir?")
+        else:
+            # for/else: only runs if the loop did NOT break (no successful reply)
+            self.ui.write_log("ERR: LLM — empty response after all rounds")
+            self.speak("Desculpe senhor, tive um problema ao processar. Pode repetir?")
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")

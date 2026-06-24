@@ -87,10 +87,14 @@ def _load_config() -> dict:
 def get_fast_llm_model() -> str:
     """Fast model for casual chat (low latency). Falls back to llm_model."""
     cfg = _load_config()
+    # Cloud models (e.g. deepseek-v4-flash:cloud) are already fast — use llm_model directly.
+    primary = cfg.get("llm_model", _DEFAULTS["llm_model"])
+    if get_llm_provider() == "ollama_cloud":
+        return primary
     return (
         cfg.get("llm_fast_model", "").strip()
         or cfg.get("llm_fallback_model", "").strip()
-        or cfg.get("llm_model", _DEFAULTS["llm_model"])
+        or primary
     )
 
 
