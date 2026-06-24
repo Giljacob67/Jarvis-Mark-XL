@@ -335,7 +335,21 @@ class KokoroTTSEngine:
 
 
 class ElevenLabsTTSEngine:
-    """ElevenLabs cloud TTS – API key required."""
+    """ElevenLabs cloud TTS – API key required, best quality."""
+
+    # Pre-configured voice options for Portuguese and English
+    VOICES = {
+        "adam": "pNInz6obpgDQGcFmaJgB",  # Deep male voice (default)
+        "antoni": "ErXwobaYiN019PkySvjV",  # Male voice
+        "arnold": "VR6AewLTigWG4xSOukaG",  # Male voice
+        "bella": "EXAVITQu4vr4xnSDxMaL",  # Female voice
+        "domi": "AZnzlk1XvdvUeBnXmlld",  # Female voice
+        "elli": "MF3mGyEYCl7XYWbV9V6O",  # Female voice
+        "josh": "TxGEqnHWrfWFTfGW9XjX",  # Male voice
+        "rachel": "21m00Tcm4TlvDq8ikWAM",  # Female voice
+        "sam": "yoZ06aMxZJJ28mfd3POQ",  # Male voice
+        "thomas": "GBv7mTt0atIp3Br8iCzej3",  # Male voice
+    }
 
     def __init__(
         self,
@@ -343,12 +357,17 @@ class ElevenLabsTTSEngine:
         voice_id: str = "pNInz6obpgDQGcFmaJgB",
         stability: float = 0.5,
         similarity_boost: float = 0.75,
+        style: float = 0.0,
+        use_speaker_boost: bool = True,
         speed: float = 1.0,
     ):
         self.api_key  = api_key
-        self.voice_id = voice_id
+        # Check if voice_id is a named voice
+        self.voice_id = self.VOICES.get(voice_id.lower(), voice_id)
         self.stability = stability
         self.similarity_boost = similarity_boost
+        self.style = style
+        self.use_speaker_boost = use_speaker_boost
         self.speed = speed
 
     def speak(self, text: str) -> None:
@@ -363,15 +382,40 @@ class ElevenLabsTTSEngine:
             "voice_settings": {
                 "stability": self.stability,
                 "similarity_boost": self.similarity_boost,
+                "style": self.style,
+                "use_speaker_boost": self.use_speaker_boost,
                 "speed": self.speed,
             },
         }
-        resp = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
-            json=payload, headers=headers, timeout=30,
-        )
-        resp.raise_for_status()
-        _play_audio_bytes(resp.content)
+        try:
+            resp = requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
+                json=payload, headers=headers, timeout=30,
+            )
+            resp.raise_for_status()
+            _play_audio_bytes(resp.content)
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                log.error("ElevenLabs API key invalid or expired")
+            elif e.response.status_code == 429:
+                log.error("ElevenLabs rate limit exceeded")
+            else:
+                log.error("ElevenLabs API error: %s", e)
+            raise
+
+    @classmethod
+    def list_voices(cls, api_key: str) -> list[dict]:
+        """List available voices from ElevenLabs API."""
+        import requests
+        headers = {"xi-api-key": api_key}
+        try:
+            resp = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            return [{"name": v["name"], "id": v["voice_id"]} for v in data.get("voices", [])]
+        except Exception as e:
+            log.error("Failed to list ElevenLabs voices: %s", e)
+            return []
 
 
 # ---------------------------------------------------------------------------
@@ -432,15 +476,19 @@ def create_tts_player(config: dict) -> TTSPlayer:
         engine = KokoroTTSEngine(voice=voice, speed=speed)
     elif engine_name == "elevenlabs":
         api_key          = config.get("elevenlabs_api_key", "")
-        voice_id         = config.get("tts_voice", "pNInz6obpgDQGcFmaJgB")
+        voice_id         = config.get("tts_voice", "adam")  # Can be name or ID
         stability        = float(config.get("tts_stability", 0.5))
         similarity_boost = float(config.get("tts_similarity_boost", 0.75))
+        style            = float(config.get("tts_style", 0.0))
+        use_speaker_boost = config.get("tts_use_speaker_boost", True)
         speed            = float(config.get("tts_speed", 1.0))
         engine = ElevenLabsTTSEngine(
             api_key=api_key,
             voice_id=voice_id,
             stability=stability,
             similarity_boost=similarity_boost,
+            style=style,
+            use_speaker_boost=use_speaker_boost,
             speed=speed,
         )
     else:   # edgetts (default)

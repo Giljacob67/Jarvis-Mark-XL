@@ -37,6 +37,8 @@ def test_create_tts_player_elevenlabs():
             "tts_voice": "voice-123",
             "tts_stability": "0.6",
             "tts_similarity_boost": "0.8",
+            "tts_style": "0.3",
+            "tts_use_speaker_boost": False,
             "tts_speed": "1.1",
         }
         player = create_tts_player(config)
@@ -45,6 +47,8 @@ def test_create_tts_player_elevenlabs():
             voice_id="voice-123",
             stability=0.6,
             similarity_boost=0.8,
+            style=0.3,
+            use_speaker_boost=False,
             speed=1.1,
         )
 

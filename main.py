@@ -622,7 +622,13 @@ class JarvisLocal:
                     self._stt = VoskSTT(new_config.get("vosk_model_path"), language=stt_language)
                 else:
                     from core.stt import WhisperSTT
-                    self._stt = WhisperSTT(new_config.get("stt_model", "base"), language=stt_language)
+                    self._stt = WhisperSTT(
+                        new_config.get("stt_model", "base"),
+                        language=stt_language,
+                        beam_size=int(new_config.get("stt_beam_size", 5)),
+                        best_of=int(new_config.get("stt_best_of", 5)),
+                        use_webrtc_vad=new_config.get("stt_use_webrtc_vad", True),
+                    )
                 self.ui.write_log("SYS: STT reconfigured.")
             except Exception as e:
                 self.ui.write_log(f"ERR: STT reconfigure — {e}")
@@ -1963,7 +1969,13 @@ class JarvisLocal:
                         )
                     else:
                         from core.stt import WhisperSTT
-                        self._stt = WhisperSTT(stt_model, language=stt_language)
+                        self._stt = WhisperSTT(
+                            stt_model,
+                            language=stt_language,
+                            beam_size=int(self._config.get("stt_beam_size", 5)),
+                            best_of=int(self._config.get("stt_best_of", 5)),
+                            use_webrtc_vad=self._config.get("stt_use_webrtc_vad", True),
+                        )
                     self.ui.write_log("SYS: STT ready.")
                     self.ui.mark_startup_ready("stt")
                 except Exception as e:

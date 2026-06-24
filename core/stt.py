@@ -18,11 +18,19 @@ log = get_logger("stt")
 class WhisperSTT:
     """Offline transcription using faster-whisper."""
 
-    def __init__(self, model_name: str = "base", language: str | None = None):
+    def __init__(
+        self,
+        model_name: str = "base",
+        language: str | None = None,
+        beam_size: int = 5,
+        best_of: int = 5,
+        use_webrtc_vad: bool = True,
+    ):
         import os
 
         from faster_whisper import WhisperModel
-        log.info("Loading Whisper '%s'", model_name)
+        log.info("Loading Whisper '%s' (beam=%d, best_of=%d, webrtc_vad=%s)",
+                 model_name, beam_size, best_of, use_webrtc_vad)
         try:
             import torch
             device  = "cuda" if torch.cuda.is_available() else "cpu"
@@ -44,19 +52,39 @@ class WhisperSTT:
                 raise
 
         self._language = None if (not language or language.strip().lower() == "auto") else language.strip().lower()
+        self._beam_size = beam_size
+        self._best_of = best_of
+        self._use_webrtc_vad = use_webrtc_vad
         log.info("Whisper '%s' ready (%s)", model_name, device)
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe a float32 mono 16 kHz numpy array. Returns transcript string."""
         try:
+            # WebRTC VAD parameters for better voice detection
+            vad_params = {
+                "min_silence_duration_ms": 300,
+                "speech_pad_ms": 200,  # Add padding around speech
+            }
+            
+            if self._use_webrtc_vad:
+                # Use more aggressive VAD settings
+                vad_params.update({
+                    "threshold": 0.5,  # WebRTC VAD threshold (0-1)
+                    "min_speech_duration_ms": 250,
+                    "max_speech_duration_s": 30,
+                })
+            
             segments, _ = self._model.transcribe(
                 audio,
                 language=self._language,
-                beam_size=1,
-                best_of=1,
+                beam_size=self._beam_size,
+                best_of=self._best_of,
                 condition_on_previous_text=False,
                 vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 300},
+                vad_parameters=vad_params,
+                temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],  # Temperature fallback
+                no_speech_threshold=0.6,
+                compression_ratio_threshold=2.4,
             )
             return " ".join(s.text for s in segments).strip()
         except Exception as e:

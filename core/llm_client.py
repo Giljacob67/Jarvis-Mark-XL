@@ -40,20 +40,31 @@ PROVIDER_CONFIGS = {
     "ollama": {
         "name": "Ollama (Local)",
         "url": "http://localhost:11434",
-        "models": ["qwen3.5:4b", "qwen3.5:2b", "qwen3.5:9b", "llama3.2", "mistral"],
+        "models": [
+            "qwen3.5:4b", "qwen3.5:2b", "qwen3.5:9b", "qwen3.5:0.8b",
+            "llama3.2", "llama3.1:8b", "mistral", "phi3",
+            "gemma2:9b", "gemma2:2b",
+        ],
         "requires_key": False,
     },
     "openai": {
         "name": "OpenAI",
         "url": "https://api.openai.com/v1",
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        "models": [
+            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
+            "gpt-3.5-turbo", "o1-preview", "o1-mini",
+        ],
         "requires_key": True,
         "key_name": "openai_api_key",
     },
     "anthropic": {
         "name": "Anthropic (Claude)",
         "url": "https://api.anthropic.com",
-        "models": ["claude-sonnet-4-20250514", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+        "models": [
+            "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022", "claude-3-opus-20240229",
+            "claude-3-sonnet-20240229", "claude-3-haiku-20240307",
+        ],
         "requires_key": True,
         "key_name": "anthropic_api_key",
     },
@@ -61,10 +72,13 @@ PROVIDER_CONFIGS = {
         "name": "OpenRouter",
         "url": "https://openrouter.ai/api/v1",
         "models": [
-            "openai/gpt-4o", "openai/gpt-4o-mini",
+            "openai/gpt-4o", "openai/gpt-4o-mini", "openai/gpt-4-turbo",
             "anthropic/claude-3.5-sonnet", "anthropic/claude-3-haiku",
-            "google/gemini-pro-1.5", "meta-llama/llama-3.1-70b-instruct",
-            "qwen/qwen-2.5-72b-instruct",
+            "google/gemini-pro-1.5", "google/gemini-flash-1.5",
+            "meta-llama/llama-3.1-70b-instruct", "meta-llama/llama-3.1-8b-instruct",
+            "qwen/qwen-2.5-72b-instruct", "qwen/qwen-2.5-7b-instruct",
+            "mistralai/mistral-large", "mistralai/mixtral-8x7b-instruct",
+            "deepseek/deepseek-chat", "deepseek/deepseek-coder",
         ],
         "requires_key": True,
         "key_name": "openrouter_api_key",
@@ -75,6 +89,16 @@ PROVIDER_CONFIGS = {
         "models": ["qwen3-coder:480b-cloud", "gpt-oss:120b-cloud"],
         "requires_key": True,
         "key_name": "ollama_api_key",
+    },
+    "google": {
+        "name": "Google AI (Gemini)",
+        "url": "https://generativelanguage.googleapis.com/v1beta",
+        "models": [
+            "gemini-1.5-pro", "gemini-1.5-flash",
+            "gemini-1.0-pro", "gemini-pro",
+        ],
+        "requires_key": True,
+        "key_name": "google_api_key",
     },
 }
 
@@ -120,6 +144,8 @@ def get_llm_provider() -> str:
         return "openrouter"
     if raw in ("ollama_cloud", "ollamacloud"):
         return "ollama_cloud"
+    if raw in ("google", "gemini"):
+        return "google"
     return "ollama"
 
 
@@ -253,6 +279,22 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         }
         try:
             _session.post(f"{url}/v1/messages", json=payload, headers=headers, timeout=30).raise_for_status()
+            log.info("'%s' ready.", model)
+            return True
+        except Exception as e:
+            log.warning("Warmup failed: %s", e)
+            return False
+
+    if provider == "google":
+        # Google Gemini API uses different format
+        api_key = _get_api_key(provider)
+        gemini_url = f"{url}/models/{model}:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": "hi"}]}],
+            "generationConfig": {"maxOutputTokens": 1},
+        }
+        try:
+            _session.post(gemini_url, json=payload, timeout=30).raise_for_status()
             log.info("'%s' ready.", model)
             return True
         except Exception as e:
@@ -420,6 +462,48 @@ def call_llm(
             }
         except Exception as e:
             raise RuntimeError(f"{provider} API error: {e}") from e
+
+    # ── Google Gemini ─────────────────────────────────────────────────────
+    if provider == "google":
+        api_key = _get_api_key(provider)
+        gemini_url = f"{url}/models/{model}:generateContent?key={api_key}"
+        
+        # Convert messages to Gemini format
+        contents = []
+        system_instruction = None
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "system":
+                system_instruction = {"parts": [{"text": content}]}
+            elif role == "user":
+                contents.append({"role": "user", "parts": [{"text": content}]})
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": content}]})
+        
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": 500,
+                "temperature": 0.7,
+            },
+        }
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+        
+        try:
+            resp = _session.post(gemini_url, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            # Extract text from Gemini response
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = " ".join(p.get("text", "") for p in parts)
+                return {"content": text.strip(), "tool_calls": []}
+            return {"content": "", "tool_calls": []}
+        except Exception as e:
+            raise RuntimeError(f"Google Gemini API error: {e}") from e
 
     # ── Ollama (local) ────────────────────────────────────────────────────
     payload = {
@@ -615,6 +699,76 @@ def call_llm_stream(
             yield from _stream_sse(url, f"{url}/v1/chat/completions", payload, headers, timeout, provider, provider)
         except Exception as e:
             raise RuntimeError(f"{provider} stream error: {e}") from e
+        return
+
+    # ── Google Gemini ─────────────────────────────────────────────────────
+    if provider == "google":
+        api_key = _get_api_key(provider)
+        gemini_url = f"{url}/models/{model}:streamGenerateContent?alt=sse&key={api_key}"
+        
+        # Convert messages to Gemini format
+        contents = []
+        system_instruction = None
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "system":
+                system_instruction = {"parts": [{"text": content}]}
+            elif role == "user":
+                contents.append({"role": "user", "parts": [{"text": content}]})
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": content}]})
+        
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": 500,
+                "temperature": 0.7,
+            },
+        }
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+        
+        try:
+            with _session.post(gemini_url, json=payload, timeout=timeout, stream=True) as resp:
+                resp.raise_for_status()
+                full_content = ""
+                buf = ""
+                for raw in resp.iter_lines():
+                    if not raw:
+                        continue
+                    line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    # Extract text from Gemini streaming response
+                    candidates = chunk.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        for part in parts:
+                            text = part.get("text", "")
+                            if text:
+                                full_content += text
+                                buf += text
+                                while True:
+                                    m = _SENT_END.search(buf)
+                                    if not m:
+                                        break
+                                    sentence = buf[:m.start() + 1].strip()
+                                    buf = buf[m.end():]
+                                    if sentence:
+                                        yield {"type": "sentence", "text": sentence}
+                
+                if buf.strip():
+                    yield {"type": "sentence", "text": buf.strip()}
+                yield {"type": "done", "content": full_content.strip(), "tool_calls": []}
+        except Exception as e:
+            raise RuntimeError(f"Google Gemini stream error: {e}") from e
         return
 
     # ── Ollama (local) ────────────────────────────────────────────────────
