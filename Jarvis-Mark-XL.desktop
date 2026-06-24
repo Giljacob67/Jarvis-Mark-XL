@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=JARVIS Mark XL
+GenericName=Assistente de voz
+Comment=Assistente JARVIS — voz, Groq, Deepgram, ElevenLabs
+Exec=/home/gilberto-jacob/Jarvis-Mark-XL/run.sh
+Path=/home/gilberto-jacob/Jarvis-Mark-XL
+Icon=/usr/share/icons/Yaru/scalable/devices/audio-input-microphone-symbolic.svg
+Terminal=false
+Categories=Utility;AudioVideo;Audio;
+Keywords=jarvis;assistente;voz;ai;
+StartupNotify=true
+StartupWMClass=Jarvis-Mark-XL
