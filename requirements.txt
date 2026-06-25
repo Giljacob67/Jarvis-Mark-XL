@@ -16,6 +16,11 @@ numpy
 soundfile
 requests
 websocket-client
+fastapi
+uvicorn[standard]
+cryptography
+python-multipart
+qrcode[pil]
 
 # ── Web automation & search ───────────────────────────────────────────────
 playwright

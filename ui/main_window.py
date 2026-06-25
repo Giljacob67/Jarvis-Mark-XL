@@ -14,6 +14,7 @@ from pathlib import Path
 import psutil
 
 from core.paths import BASE_DIR, CONFIG_DIR, API_CONFIG_PATH as API_FILE
+from ui.remote_overlay import RemoteKeyOverlay
 
 from PyQt6.QtCore import (
     QEasingCurve, QMimeData, QObject, QPointF, QRectF, QSize, Qt,
@@ -1727,7 +1728,9 @@ class MainWindow(QMainWindow):
             (screen.height() - _DEFAULT_H) // 2,
         )
 
-        self.on_text_command  = None
+        self.on_text_command   = None
+        self.on_remote_clicked = None
+        self._remote_overlay: RemoteKeyOverlay | None = None
         self._muted           = False
         self._current_file: str | None = None
 
@@ -1793,6 +1796,14 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._remote_overlay and self._remote_overlay.isVisible():
+            cw = self.centralWidget()
+            ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
+            self._remote_overlay.setGeometry(
+                (cw.width() - ow) // 2,
+                (cw.height() - oh) // 2,
+                ow, oh,
+            )
         cw = self.centralWidget()
         if self._overlay and self._overlay.isVisible():
             ow, oh = 520, 580
@@ -2092,6 +2103,22 @@ class MainWindow(QMainWindow):
         self._style_mute_btn()
         lay.addWidget(self._mute_btn)
 
+        remote_btn = QPushButton("◉  REMOTE CONTROL")
+        remote_btn.setFixedHeight(30)
+        remote_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        remote_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remote_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #00091a; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: {C.PRI_GHO}; border: 1px solid {C.PRI};
+            }}
+        """)
+        remote_btn.clicked.connect(self._open_remote)
+        lay.addWidget(remote_btn)
+
         fs_btn = QPushButton("⛶  FULLSCREEN  [F11]")
         fs_btn.setFixedHeight(26)
         fs_btn.setFont(QFont("Courier New", 7))
@@ -2191,6 +2218,37 @@ class MainWindow(QMainWindow):
                 f"({size}) has been uploaded and ask what they'd like to do with it."
             )
             threading.Thread(target=self.on_text_command, args=(msg,), daemon=True).start()
+
+    def notify_phone_connected(self) -> None:
+        if self._remote_overlay and self._remote_overlay.isVisible():
+            self._remote_overlay.mark_connected()
+
+    def _open_remote(self) -> None:
+        if not self.on_remote_clicked:
+            self._log.append_log("SYS: Dashboard remoto indisponível.")
+            return
+        result = self.on_remote_clicked()
+        if not result:
+            self._log.append_log("SYS: Não foi possível gerar chave remota.")
+            return
+        url    = result[0]
+        key    = result[1]
+        auto   = result[2] if len(result) >= 3 else ""
+        manual = result[3] if len(result) >= 4 else url
+        if self._remote_overlay:
+            self._remote_overlay._do_close()
+        cw = self.centralWidget()
+        ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
+        ov = RemoteKeyOverlay(
+            url, key, auto_login_url=auto, manual_url=manual,
+            expiry_secs=600, parent=cw,
+        )
+        ov.set_new_key_callback(self.on_remote_clicked)
+        ov.setGeometry((cw.width() - ow) // 2, (cw.height() - oh) // 2, ow, oh)
+        ov.closed.connect(lambda: setattr(self, "_remote_overlay", None))
+        ov.show()
+        self._remote_overlay = ov
+        self._log.append_log(f"SYS: Chave remota — {manual or url}")
 
     def _toggle_mute(self):
         self._muted = not self._muted
@@ -2384,6 +2442,17 @@ class JarvisUI:
     @on_reconfigure.setter
     def on_reconfigure(self, cb):
         self._win._on_reconfigure_cb = cb
+
+    @property
+    def on_remote_clicked(self):
+        return self._win.on_remote_clicked
+
+    @on_remote_clicked.setter
+    def on_remote_clicked(self, cb):
+        self._win.on_remote_clicked = cb
+
+    def notify_phone_connected(self) -> None:
+        self._win.notify_phone_connected()
 
     def set_state(self, state: str):
         self._win._state_sig.emit(state)

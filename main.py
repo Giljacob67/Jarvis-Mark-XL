@@ -320,6 +320,11 @@ class JarvisLocal:
         self._turn_lock       = threading.Lock()
         self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
         self._stt_executor        = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
+        self._dashboard           = None
+        self._dashboard_loop      = None
+        self._dashboard_cmd_sync: queue.Queue = queue.Queue()
+        self._phone_pcm_sync:    queue.Queue = queue.Queue()
+        self._phone_active        = False
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -329,14 +334,146 @@ class JarvisLocal:
         init_db()
         self._conv_id = create_conversation()
 
-        self.ui.on_text_command = self._on_text_command
+        self.ui.on_text_command   = self._on_text_command
+        self.ui.on_remote_clicked = self._make_remote_key
 
     def _mic_blocked(self) -> bool:
-        """True while Jarvis is speaking or in post-TTS cooldown (blocks echo)."""
+        """True while Jarvis is speaking, phone mic active, or post-TTS cooldown."""
+        if self._phone_active:
+            return True
         with self._speaking_lock:
             if self._speaking:
                 return True
         return time.time() < self._listen_blocked_until
+
+    # ------------------------------------------------------------------
+    # Remote dashboard (phone control via QR on port 8000)
+    # ------------------------------------------------------------------
+
+    def _make_remote_key(self):
+        """Called from UI when user presses Remote Control."""
+        if self._dashboard is None:
+            self.ui.write_log(
+                "SYS: Dashboard remoto indisponível. "
+                "pip install fastapi 'uvicorn[standard]' cryptography qrcode[pil] python-multipart"
+            )
+            return None
+        key    = self._dashboard.new_key()
+        url    = self._dashboard.get_url()
+        manual = self._dashboard.get_manual_url()
+        return url, key, f"{url}/auto-login?key={key}", manual
+
+    def _on_phone_connected(self) -> None:
+        self.ui.write_log("SYS: Celular conectado via Remote Dashboard.")
+        self.ui.notify_phone_connected()
+
+    def _dashboard_broadcast(self, msg: dict) -> None:
+        if self._dashboard_loop and self._dashboard:
+            try:
+                import asyncio
+                asyncio.run_coroutine_threadsafe(
+                    self._dashboard.broadcast(msg), self._dashboard_loop
+                )
+            except Exception:
+                pass
+
+    def _start_remote_dashboard(self) -> None:
+        try:
+            from dashboard.server import DashboardServer
+            self._dashboard = DashboardServer()
+            self._dashboard.set_connect_callback(self._on_phone_connected)
+
+            def _run_dashboard() -> None:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._dashboard_loop = loop
+
+                async def _bridge_commands() -> None:
+                    while True:
+                        text = await self._dashboard._command_queue.get()
+                        self._dashboard_cmd_sync.put(text)
+
+                async def _bridge_phone_audio() -> None:
+                    while True:
+                        item = await self._dashboard._phone_audio_queue.get()
+                        pcm  = item.get("data", b"")
+                        if pcm:
+                            self._phone_pcm_sync.put(pcm)
+
+                async def _main() -> None:
+                    asyncio.create_task(_bridge_commands())
+                    asyncio.create_task(_bridge_phone_audio())
+                    await self._dashboard.serve()
+
+                try:
+                    loop.run_until_complete(_main())
+                except Exception as e:
+                    print(f"[Dashboard] Stopped: {e}")
+
+            threading.Thread(target=_run_dashboard, daemon=True, name="dashboard").start()
+            threading.Thread(
+                target=self._dashboard_command_loop, daemon=True, name="dash-cmd"
+            ).start()
+            threading.Thread(
+                target=self._phone_audio_worker, daemon=True, name="phone-audio"
+            ).start()
+            ip = self._dashboard._ip
+            self.ui.write_log(f"SYS: Remote Dashboard em http://{ip}:8000")
+            self.ui.write_log("SYS: Clique ◉ REMOTE CONTROL para gerar QR code.")
+        except Exception as e:
+            self._dashboard = None
+            self.ui.write_log(f"WARN: Remote Dashboard — {e}")
+
+    def _dashboard_command_loop(self) -> None:
+        while True:
+            try:
+                text = self._dashboard_cmd_sync.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            text = (text or "").strip()
+            if not text:
+                continue
+            self.ui.write_log(f"[Celular]: {text}")
+            self._dashboard_broadcast({"type": "log", "speaker": "user", "text": text})
+            self._process_message(text, from_voice=False)
+
+    def _phone_audio_worker(self) -> None:
+        """Transcribe phone mic PCM bursts (WebSocket from mobile browser)."""
+        buf: list[bytes] = []
+        last = time.time()
+        while True:
+            try:
+                pcm = self._phone_pcm_sync.get(timeout=0.25)
+                self._phone_active = True
+                buf.append(pcm)
+                last = time.time()
+            except queue.Empty:
+                if not buf:
+                    if self._phone_active and time.time() - last > 1.5:
+                        self._phone_active = False
+                    continue
+                if time.time() - last < 0.9:
+                    continue
+                merged = b"".join(buf)
+                buf = []
+                self._phone_active = False
+                if len(merged) < 3200 or self._stt is None:
+                    continue
+                try:
+                    import numpy as np
+                    audio = np.frombuffer(merged, dtype=np.int16).astype(np.float32) / 32767.0
+                    t0 = time.time()
+                    text = self._stt.transcribe(audio)
+                    stt_ms = int((time.time() - t0) * 1000)
+                    if text.strip():
+                        self.ui.write_log(f"SYS: 🎤 Celular STT {stt_ms}ms")
+                        self._dashboard_broadcast(
+                            {"type": "log", "speaker": "user", "text": text}
+                        )
+                        self._process_message(text.strip(), from_voice=True)
+                except Exception as e:
+                    self.ui.write_log(f"ERR: Phone STT — {e}")
 
     # ------------------------------------------------------------------
     # Wake word detection
@@ -959,6 +1096,9 @@ class JarvisLocal:
                         self.speak(reply)
                     self.ui.add_history("jarvis", reply)
                     self._persist_assistant(reply)
+                    self._dashboard_broadcast(
+                        {"type": "log", "speaker": "jarvis", "text": reply}
+                    )
                     break
                 self.ui.write_log("ERR: LLM — empty reply (no tools)")
                 break
@@ -1392,6 +1532,7 @@ class JarvisLocal:
             from core.llm_client import get_chat_llm_config
             _cu, _cm, _cp = get_chat_llm_config()
             self.ui.write_log(f"SYS: Chat fast-path → {_cp} / {_cm}")
+            self._start_remote_dashboard()
             self.ui.write_log("SYS: JARVIS online.")
             self.ui.set_state("LISTENING")
             self.ui.set_startup_status("● JARVIS online · Voice loading in background…")
