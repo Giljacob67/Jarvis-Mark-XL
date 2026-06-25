@@ -319,6 +319,7 @@ class JarvisLocal:
         self._conversation:   list[dict]  = []
         self._turn_lock       = threading.Lock()
         self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
+        self._voice_session_until  = 0.0   # follow-up voice without repeating "Jarvis"
         self._stt_executor        = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
         self._dashboard           = None
         self._dashboard_loop      = None
@@ -345,6 +346,16 @@ class JarvisLocal:
             if self._speaking:
                 return True
         return time.time() < self._listen_blocked_until
+
+    def _voice_session_secs(self) -> float:
+        return float(self._config.get("voice_session_sec", 45))
+
+    def _extend_voice_session(self) -> None:
+        """Keep listening for follow-up questions without saying Jarvis again."""
+        self._voice_session_until = time.time() + self._voice_session_secs()
+
+    def _in_voice_session(self) -> bool:
+        return time.time() < self._voice_session_until
 
     # ------------------------------------------------------------------
     # Remote dashboard (phone control via QR on port 8000)
@@ -611,7 +622,9 @@ class JarvisLocal:
                 if self._tts_queue.empty():
                     with self._speaking_lock:
                         self._speaking = False
-                    self._listen_blocked_until = time.time() + 4.0
+                    # Shorter cooldown during active voice session (faster follow-ups).
+                    _cd = 2.0 if self._in_voice_session() else 4.0
+                    self._listen_blocked_until = time.time() + _cd
                     if not self.ui.muted:
                         self.ui.set_state("LISTENING")
 
@@ -1213,6 +1226,9 @@ class JarvisLocal:
             self.ui.write_log("ERR: LLM — empty response after all rounds")
             self.speak("Desculpe senhor, tive um problema ao processar. Pode repetir?")
 
+        if from_voice and _replied:
+            self._extend_voice_session()
+
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
@@ -1237,8 +1253,16 @@ class JarvisLocal:
             self._process_message(text, from_voice=True)
             return
 
+        # After "Jarvis, ..." keep the conversation open for ~45s (no wake word needed).
+        if self._in_voice_session():
+            self.ui.write_log(f"VOZ (sessão): '{text}'")
+            self._extend_voice_session()
+            self._process_message(text, from_voice=True)
+            return
+
         is_wake, command = self._check_wake_word(text)
         if is_wake:
+            self._extend_voice_session()
             if command:
                 self.ui.write_log(f"WAKE: '{text}' → '{command}'")
                 self._process_message(command, from_voice=True)
@@ -1246,7 +1270,7 @@ class JarvisLocal:
                 self.ui.write_log(f"WAKE: '{text}' (aguardando comando)")
                 self.speak("Sim?")
         else:
-            self.ui.write_log(f"SKIP: '{text}' (sem wake word)")
+            self.ui.write_log(f"SKIP: '{text}' (diga Jarvis para iniciar)")
 
     def _listen_deepgram(self) -> None:
         """Mic → Deepgram live WebSocket → Wake Word → LLM (lowest latency)."""
