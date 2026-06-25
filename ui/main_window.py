@@ -1561,6 +1561,10 @@ class SetupOverlay(QWidget):
             tts_speed = "1.0"
 
         _provider = getattr(self, "_sel_llm_provider", "ollama")
+        if _provider == "ollama_cloud":
+            from core.llm_client import normalize_model_name
+            llm_model = normalize_model_name(llm_model, "ollama_cloud")
+            self._llm_model_input.setText(llm_model)
         _default_url = {
             "groq":         "https://api.groq.com/openai/v1",
             "openai":       "http://localhost:1234",

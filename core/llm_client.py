@@ -73,6 +73,65 @@ def _openai_chat_url(url: str) -> str:
     return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
 
+# OpenRouter-style names pasted into Ollama Cloud config (invalid there).
+_CLOUD_MODEL_ALIASES: dict[str, str] = {
+    "openai/gpt-oss-120b":  "gpt-oss:120b-cloud",
+    "openai/gpt-oss-20b":   "gpt-oss:20b-cloud",
+    "gpt-oss-120b":         "gpt-oss:120b-cloud",
+    "gpt-oss-20b":          "gpt-oss:20b-cloud",
+}
+
+
+def normalize_model_name(model: str, provider: str | None = None) -> str:
+    """Fix common model-name mistakes (esp. openai/ prefix on Ollama Cloud)."""
+    m = (model or "").strip()
+    if not m:
+        return m
+    provider = provider or get_llm_provider()
+    if provider != "ollama_cloud":
+        return m
+    if m in _CLOUD_MODEL_ALIASES:
+        return _CLOUD_MODEL_ALIASES[m]
+    if "/" in m:
+        prefix, rest = m.split("/", 1)
+        if prefix.lower() in (
+            "openai", "anthropic", "google", "meta", "mistralai", "deepseek", "qwen",
+        ):
+            mapped = _CLOUD_MODEL_ALIASES.get(m) or rest.replace("-", ":")
+            log.warning("Normalized cloud model '%s' → '%s'", m, mapped)
+            return mapped
+    return m
+
+
+def _http_error_detail(response: requests.Response | None) -> str:
+    if response is None:
+        return ""
+    try:
+        err = response.json().get("error", {})
+        if isinstance(err, dict):
+            return (err.get("message") or err.get("error") or "").strip()
+        return str(err).strip()
+    except Exception:
+        return (response.text or "")[:200].strip()
+
+
+def _cloud_fallback_models(model: str) -> list[str]:
+    cfg = _load_config()
+    out: list[str] = []
+    fb = normalize_model_name(cfg.get("llm_fallback_model", "").strip())
+    if fb and fb != model:
+        out.append(fb)
+    for candidate in (
+        "deepseek-v4-flash:cloud",
+        "gpt-oss:120b-cloud",
+        "gpt-oss:120b",
+        "deepseek-v4-flash",
+    ):
+        if candidate != model and candidate not in out:
+            out.append(candidate)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -96,12 +155,14 @@ def _default_url_for_provider(provider: str) -> str:
 def get_fast_llm_model() -> str:
     """Fast model for casual chat (low latency). Falls back to llm_model."""
     cfg = _load_config()
-    primary = cfg.get("llm_model", _DEFAULTS["llm_model"])
-    return (
+    provider = get_llm_provider()
+    primary = normalize_model_name(cfg.get("llm_model", _DEFAULTS["llm_model"]), provider)
+    raw = (
         cfg.get("llm_fast_model", "").strip()
         or cfg.get("llm_fallback_model", "").strip()
         or primary
     )
+    return normalize_model_name(raw, provider)
 
 
 def get_chat_llm_config() -> tuple[str, str, str]:
@@ -140,7 +201,9 @@ def get_chat_llm_config() -> tuple[str, str, str]:
 def get_power_llm_model() -> str:
     """Powerful model for tool-calling / complex tasks."""
     cfg = _load_config()
-    return cfg.get("llm_power_model", "").strip() or cfg.get("llm_model", _DEFAULTS["llm_model"])
+    provider = get_llm_provider()
+    raw = cfg.get("llm_power_model", "").strip() or cfg.get("llm_model", _DEFAULTS["llm_model"])
+    return normalize_model_name(raw, provider)
 
 
 def get_llm_settings() -> tuple[str, str]:
@@ -148,7 +211,8 @@ def get_llm_settings() -> tuple[str, str]:
     cfg      = _load_config()
     provider = get_llm_provider()
     url   = cfg.get("llm_url", _default_url_for_provider(provider)).rstrip("/")
-    model = cfg.get("llm_model", _DEFAULTS["llm_model"])
+    # Accept https://ollama.com or https://ollama.com/v1 — both work.
+    model = normalize_model_name(cfg.get("llm_model", _DEFAULTS["llm_model"]), provider)
     return url, model
 
 
@@ -635,7 +699,35 @@ def call_llm_stream(
             yield from _do_stream(model, bool(tools), tok_cap)
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
-            fb     = _get_fallback_model()
+            detail = _http_error_detail(e.response)
+            fb     = normalize_model_name(_get_fallback_model(), provider)
+
+            # Model not found / bad request → try cloud fallbacks, then Groq
+            if status in (400, 404):
+                for alt in _cloud_fallback_models(model):
+                    log.warning("Model '%s' failed (%s) — trying '%s'", model, status, alt)
+                    try:
+                        yield from _do_stream(alt, bool(tools), tok_cap)
+                        return
+                    except Exception:
+                        continue
+                gkey = _load_config().get("groq_api_key", "").strip()
+                if gkey and provider != "groq":
+                    groq_model = (
+                        _load_config().get("llm_fast_model", "").strip()
+                        or "llama-3.3-70b-versatile"
+                    )
+                    log.warning("Falling back to Groq '%s'", groq_model)
+                    try:
+                        yield from call_llm_stream(
+                            messages, tools,
+                            model=groq_model, provider="groq",
+                            base_url="https://api.groq.com/openai/v1",
+                            max_tokens=tok_cap,
+                        )
+                        return
+                    except Exception:
+                        pass
 
             # Rate limit → smaller fallback model, no tools
             if status == 429 and fb and fb != model:
@@ -655,7 +747,10 @@ def call_llm_stream(
                 except Exception:
                     pass
 
-            raise RuntimeError(f"{provider} HTTP error: {status}") from e
+            msg = f"{provider} HTTP {status}"
+            if detail:
+                msg += f": {detail}"
+            raise RuntimeError(msg) from e
         except requests.exceptions.ConnectionError:
             raise RuntimeError(f"Cannot reach {_provider_label(provider)} at {url}.")
         except requests.exceptions.Timeout:
