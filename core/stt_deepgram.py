@@ -126,7 +126,7 @@ class DeepgramLiveSTT:
         language: str | None = None,
         on_interim: Callable[[str], None] | None = None,
         sample_rate: int = 16_000,
-        endpointing_ms: int = 250,
+        endpointing_ms: int = 300,
         utterance_end_ms: int = 1000,
     ):
         self._api_key = (api_key or _load_api_key()).strip()

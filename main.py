@@ -198,7 +198,7 @@ class _VADBuffer:
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 0.30,   # silence after last word → send to STT
+        silence_sec:    float = 0.40,   # silence after last word → send to STT
         speech_thresh:  float = 0.008,  # RMS above this = speech
         silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
         min_speech_sec: float = 0.3,
@@ -1264,9 +1264,8 @@ class JarvisLocal:
                             _lat = int((time.time() - _t0) * 1000)
                             self._set_voice_metric(voice_turn_id, "first_sentence_ms", _lat)
                             self.ui.write_log(f"SYS: 🔊 first sentence {_lat}ms")
-                        # Voice: speak only the first sentence (faster turn-around).
-                        if not from_voice or not _streamed:
-                            self.speak(event["text"], turn_id=voice_turn_id)
+                        # Speak every streamed sentence to avoid partial voice replies.
+                        self.speak(event["text"], turn_id=voice_turn_id)
                         _streamed.append(event["text"])
                         self.ui.stream_sentence(event["text"])
                     elif event["type"] == "done":
@@ -1481,7 +1480,7 @@ class JarvisLocal:
                 api_key=self._config.get("deepgram_api_key"),
                 model=self._config.get("deepgram_model", "nova-2"),
                 language=self._config.get("stt_language", "pt"),
-                endpointing_ms=int(self._config.get("deepgram_endpointing_ms", 250)),
+                endpointing_ms=int(self._config.get("deepgram_endpointing_ms", 300)),
                 utterance_end_ms=int(self._config.get("deepgram_utterance_end_ms", 1000)),
             )
             live.start()
