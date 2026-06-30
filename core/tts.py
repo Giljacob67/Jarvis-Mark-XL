@@ -18,7 +18,10 @@ from core.logger import get_logger
 log = get_logger("tts")
 
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
 
 # USE_TF=0 stops transformers from importing TensorFlow (saves 4-8 s startup).
 # Do NOT set USE_TORCH or USE_JAX explicitly — forcing those values breaks
@@ -83,6 +86,8 @@ def _play_np(samples, sample_rate: int) -> None:
     """Play float32 mono (or stereo) audio via sounddevice.
     Accepts numpy arrays or PyTorch tensors.
     """
+    if sd is None:
+        raise RuntimeError("sounddevice is required for audio playback")
     sd.play(_to_numpy(samples), sample_rate)
     sd.wait()
 
@@ -92,6 +97,8 @@ def _play_pcm_stream(response, sample_rate: int = 24_000) -> None:
     import requests as _req
     if not isinstance(response, _req.Response):
         return
+    if sd is None:
+        raise RuntimeError("sounddevice is required for audio playback")
     leftover = b""
     with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16") as stream:
         for chunk in response.iter_content(chunk_size=8192):
@@ -111,6 +118,8 @@ def _play_pcm_stream(response, sample_rate: int = 24_000) -> None:
 def _play_audio_bytes(audio_bytes: bytes) -> None:
     """Decode MP3/WAV/OGG bytes and play via sounddevice (uses miniaudio)."""
     import miniaudio
+    if sd is None:
+        raise RuntimeError("sounddevice is required for audio playback")
     decoded = miniaudio.decode(
         audio_bytes,
         output_format=miniaudio.SampleFormat.FLOAT32,
@@ -454,7 +463,8 @@ class TTSPlayer:
                 on_done()
 
     def stop(self) -> None:
-        sd.stop()
+        if sd is not None:
+            sd.stop()
         with self._lock:
             self._playing = False
 

@@ -148,6 +148,8 @@ from core.paths import BASE_DIR, API_CONFIG_PATH, PROMPT_PATH
 SAMPLE_RATE_IN = 16_000
 BLOCK_SIZE     = 1_024
 CHANNELS       = 1
+VOICE_SESSION_ECHO_GUARD_SEC = 0.6
+DEFAULT_ECHO_GUARD_SEC = 1.2
 
 # ---------------------------------------------------------------------------
 # Tool declarations — imported from canonical source
@@ -196,7 +198,7 @@ class _VADBuffer:
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 0.45,   # silence after last word → send to STT
+        silence_sec:    float = 0.30,   # silence after last word → send to STT
         speech_thresh:  float = 0.008,  # RMS above this = speech
         silence_thresh: float = 0.004,  # RMS below this = silence (hysteresis)
         min_speech_sec: float = 0.3,
@@ -622,8 +624,12 @@ class JarvisLocal:
                 if self._tts_queue.empty():
                     with self._speaking_lock:
                         self._speaking = False
-                    # Shorter cooldown during active voice session (faster follow-ups).
-                    _cd = 2.0 if self._in_voice_session() else 4.0
+                    # Keep a short echo guard without making follow-ups feel sluggish.
+                    _cd = (
+                        VOICE_SESSION_ECHO_GUARD_SEC
+                        if self._in_voice_session()
+                        else DEFAULT_ECHO_GUARD_SEC
+                    )
                     self._listen_blocked_until = time.time() + _cd
                     if not self.ui.muted:
                         self.ui.set_state("LISTENING")
@@ -1057,6 +1063,7 @@ class JarvisLocal:
         _t0 = time.time()
         _replied = False
         _first_chunk_logged = False
+        _first_sentence_logged = False
 
         for _round in range(MAX_TOOL_ROUNDS):
             final_content    = ""
@@ -1084,6 +1091,10 @@ class JarvisLocal:
                             _route = chat_provider if _use_chat_route else "power"
                             self.ui.write_log(f"SYS: ⚡ first token {_lat}ms ({_route})")
                     elif event["type"] == "sentence":
+                        if _round == 0 and not _first_sentence_logged:
+                            _first_sentence_logged = True
+                            _lat = int((time.time() - _t0) * 1000)
+                            self.ui.write_log(f"SYS: 🔊 first sentence {_lat}ms")
                         # Voice: speak only the first sentence (faster turn-around).
                         if not from_voice or not _streamed:
                             self.speak(event["text"])

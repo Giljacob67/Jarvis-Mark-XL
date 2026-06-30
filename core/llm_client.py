@@ -44,6 +44,7 @@ from core.paths import API_CONFIG_PATH as CONFIG_PATH
 log = get_logger("llm")
 
 _SENT_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)\s*\n')
+_PARTIAL_SENT_MIN_CHARS = 90
 
 _DEFAULTS = {
     "llm_url":             "http://localhost:11434",
@@ -113,6 +114,35 @@ def _http_error_detail(response: requests.Response | None) -> str:
         return str(err).strip()
     except Exception:
         return (response.text or "")[:200].strip()
+
+
+def _split_partial_sentence(buf: str, min_chars: int = _PARTIAL_SENT_MIN_CHARS) -> tuple[str, str] | None:
+    """
+    Emit a conservative partial sentence when punctuation hasn't arrived yet.
+
+    This cuts TTS start latency for models that delay punctuation while still
+    avoiding very short / choppy fragments.
+    """
+    if len(buf.strip()) < min_chars:
+        return None
+
+    split_at = max(
+        buf.rfind(", "),
+        buf.rfind("; "),
+        buf.rfind(": "),
+        buf.rfind(" - "),
+        buf.rfind(" "),
+    )
+    if split_at <= 0:
+        return None
+
+    head = buf[: split_at + 1].strip()
+    tail = buf[split_at + 1 :].lstrip()
+    if len(head) < max(24, min_chars // 2):
+        return None
+    if len(head.split()) < 5:
+        return None
+    return head, tail
 
 
 def _cloud_fallback_models(model: str) -> list[str]:
@@ -623,6 +653,11 @@ def _stream_sse(
                 if sentence:
                     yield {"type": "sentence", "text": sentence}
 
+            partial = _split_partial_sentence(buf)
+            if partial is not None:
+                sentence, buf = partial
+                yield {"type": "sentence", "text": sentence}
+
             # Accumulate streaming tool-call fragments
             for tc in (delta.get("tool_calls") or []):
                 idx = tc.get("index", 0)
@@ -800,6 +835,11 @@ def call_llm_stream(
                     buf      = buf[m.end():]
                     if sentence:
                         yield {"type": "sentence", "text": sentence}
+
+                partial = _split_partial_sentence(buf)
+                if partial is not None:
+                    sentence, buf = partial
+                    yield {"type": "sentence", "text": sentence}
 
                 tc = msg.get("tool_calls")
                 if tc:
