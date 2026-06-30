@@ -327,6 +327,8 @@ class JarvisLocal:
         self._voice_metrics_lock   = threading.Lock()
         self._active_voice_turn_id: int | None = None
         self._active_voice_turn_lock = threading.Lock()
+        self._last_voice_transcript_norm = ""
+        self._last_voice_transcript_at = 0.0
         self._stt_executor        = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
         self._dashboard           = None
         self._dashboard_loop      = None
@@ -360,6 +362,13 @@ class JarvisLocal:
 
     def _voice_session_secs(self) -> float:
         return float(self._config.get("voice_session_sec", 45))
+
+    @staticmethod
+    def _normalize_transcript_for_dedupe(text: str) -> str:
+        text = (text or "").strip().lower()
+        text = re.sub(r"[^\w\sÀ-ÿ]", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
     def _mark_user_activity(self) -> None:
         self._last_user_activity = time.time()
@@ -1423,6 +1432,15 @@ class JarvisLocal:
         text = text.strip()
         if not text:
             return
+
+        now = time.time()
+        norm = self._normalize_transcript_for_dedupe(text)
+        if norm and norm == self._last_voice_transcript_norm and (now - self._last_voice_transcript_at) < 3.0:
+            self.ui.write_log(f"SKIP: '{text}' (transcrição duplicada)")
+            return
+        self._last_voice_transcript_norm = norm
+        self._last_voice_transcript_at = now
+
         if self._mic_blocked():
             self.ui.write_log(f"SKIP: '{text}' (echo guard)")
             return
