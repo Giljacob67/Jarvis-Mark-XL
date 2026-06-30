@@ -7,9 +7,27 @@ import re
 
 from core.llm_client import call_llm_text
 from core.logger import get_logger
-from core.tools import TOOL_NAMES
 
 log = get_logger("planner")
+
+_PLANNER_TOOL_NAMES = [
+    "open_app",
+    "web_search",
+    "game_updater",
+    "browser_control",
+    "file_controller",
+    "computer_settings",
+    "computer_control",
+    "screen_process",
+    "send_message",
+    "reminder",
+    "desktop_control",
+    "youtube_video",
+    "weather_report",
+    "flight_finder",
+    "code_helper",
+    "dev_agent",
+]
 
 
 PLANNER_PROMPT = """You are the planning module of MARK XL, a personal AI assistant.
@@ -124,8 +142,18 @@ OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 }
 """
 
-# Keep planner in sync with the canonical tool registry (core/tools.py).
-PLANNER_PROMPT += f"\n\nALL VALID TOOL NAMES:\n{', '.join(TOOL_NAMES)}\n"
+# Keep planner limited to what AgentExecutor._call_tool can execute directly.
+PLANNER_PROMPT += f"\n\nALL VALID TOOL NAMES:\n{', '.join(_PLANNER_TOOL_NAMES)}\n"
+
+
+def _sanitize_step_tool(step: dict, goal: str) -> None:
+    tool = (step.get("tool") or "").strip()
+    if tool in _PLANNER_TOOL_NAMES:
+        return
+    if tool:
+        log.warning("Unsupported planner tool '%s' in step %s — replacing with web_search", tool, step.get("step"))
+    step["tool"] = "web_search"
+    step["parameters"] = {"query": step.get("description", goal)[:200]}
 
 
 def create_plan(goal: str, context: str = "") -> dict:
@@ -142,10 +170,7 @@ def create_plan(goal: str, context: str = "") -> dict:
             raise ValueError("Invalid plan structure")
 
         for step in plan["steps"]:
-            if step.get("tool") == "generated_code":
-                log.warning("generated_code in step %s — replacing with web_search", step.get("step"))
-                step["tool"]       = "web_search"
-                step["parameters"] = {"query": step.get("description", goal)[:200]}
+            _sanitize_step_tool(step, goal)
 
         log.info("Plan: %d steps", len(plan["steps"]))
         for s in plan["steps"]:
@@ -196,9 +221,7 @@ Create a REVISED plan for the remaining work only. Do not repeat completed steps
         plan = json.loads(text)
 
         for step in plan.get("steps", []):
-            if step.get("tool") == "generated_code":
-                step["tool"]       = "web_search"
-                step["parameters"] = {"query": step.get("description", goal)[:200]}
+            _sanitize_step_tool(step, goal)
 
         log.info("Revised plan: %d steps", len(plan.get("steps", [])))
         return plan

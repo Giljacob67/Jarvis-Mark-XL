@@ -95,7 +95,7 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
     "stt_language":       "pt",
     "deepgram_api_key":   "YOUR_DEEPGRAM_KEY",
     "deepgram_model":     "nova-2",
-    "deepgram_endpointing_ms": 250,
+    "deepgram_endpointing_ms": 300,
     "proactive_mode":      false,
     "proactive_interval_sec": 900,
     "llm_provider":       "groq",
@@ -116,7 +116,7 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 | `stt_model` | `tiny` / `base` / `small` / `medium` / `large-v3` | `base` |
 | `stt_language` | `auto` or ISO code (`tr`, `en`, `de` …) | `auto` |
 | `deepgram_api_key` | Deepgram token | — |
-| `deepgram_endpointing_ms` | endpointing in ms for live STT | `250` |
+| `deepgram_endpointing_ms` | endpointing in ms for live STT | `300` |
 | `proactive_mode` | enable idle proactive suggestions | `false` |
 | `proactive_interval_sec` | idle seconds before proactive nudge | `900` |
 | `llm_provider` | `groq` / `ollama` / `ollama_cloud` / `openai` | `groq` (first boot) |
