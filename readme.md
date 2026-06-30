@@ -16,13 +16,13 @@ Successor to the previous mark, which used the Google Gemini Live API. MARK XL r
 ## Architecture
 
 ```
-Microphone → STT (Whisper / Vosk)
+Microphone → STT (Deepgram Live / Whisper / Vosk)
                   ↓
-           Ollama LLM (tool calling + streaming)
+      LLM (Groq / Ollama Cloud / Ollama Local / OpenAI-compatible)
                   ↓
          Tool Execution (OS, Browser, Files …)
                   ↓
-           TTS (EdgeTTS / Kokoro / ElevenLabs)
+           TTS (ElevenLabs / EdgeTTS / Kokoro)
                   ↓
               Speaker
 ```
@@ -31,9 +31,9 @@ Microphone → STT (Whisper / Vosk)
 
 | Layer | Technology | Notes |
 |-------|-----------|-------|
-| **STT** | faster-whisper / Vosk | Fully offline. Auto language detection or forced locale. |
-| **LLM** | Ollama (any model) | qwen2.5, llama3.2, mistral, etc. Streaming + tool calling. |
-| **TTS** | EdgeTTS / Kokoro / ElevenLabs | EdgeTTS = free + internet. Kokoro = fully offline. |
+| **STT** | Deepgram Live / faster-whisper / Vosk | Hybrid low-latency mode (cloud) + offline fallback. |
+| **LLM** | Groq / Ollama Cloud / Ollama / OpenAI-compatible | Fast chat route + power route with streaming + tool calling. |
+| **TTS** | ElevenLabs / EdgeTTS / Kokoro | ElevenLabs = lowest latency, Kokoro = fully offline. |
 | **UI** | PyQt6 | HUD overlay with system monitor, log panel, file drop zone. |
 | **Agent** | Custom task queue | Multi-step planner + executor + error recovery. |
 
@@ -42,11 +42,14 @@ Microphone → STT (Whisper / Vosk)
 ## Features
 
 - **Streaming responses** — TTS starts speaking on the first sentence, not after the full response
-- **Tool calling** — 18 built-in tools: browser control, file management, weather, YouTube, messaging, screen analysis, code helper, game updater, flight finder, and more
+- **Tool calling** — 30+ built-in tools: browser control, file management, weather, YouTube, messaging, screen analysis, code helper, game updater, flight finder, calendar, translator, notes, smart home, and more
 - **Long-term memory** — Silently saves personal facts; recalled in every conversation
 - **Live configuration** — Change LLM model, STT engine, TTS voice without restarting (⚙ Configure button)
 - **Ollama auto-start** — Automatically launches `ollama serve` if it's not running
-- **Model warmup** — Pre-loads the LLM into memory during startup so the first message is as fast as subsequent ones
+- **Model warmup** — Pre-loads the LLM during startup so the first message is as fast as subsequent ones
+- **Turn cancellation (voice)** — New voice command supersedes old turn and cancels stale TTS queue/output
+- **Latency telemetry** — Logs STT, first-token, first-sentence, and first-audio timing per voice turn
+- **Proactive mode (optional)** — Idle-time nudges for next actions (calendar, health check, reminders)
 - **Multi-language STT** — Set `stt_language` to `auto` (Whisper detects) or a specific locale (`tr`, `de`, `fr`, …)
 - **Cross-platform** — Windows, macOS, Linux (OS detected automatically at runtime)
 - **File drop zone** — Drag and drop images, PDFs, Word docs, CSV, audio, video for AI processing
@@ -56,7 +59,7 @@ Microphone → STT (Whisper / Vosk)
 ## Requirements
 
 - Python 3.11 or 3.12
-- [Ollama](https://ollama.com) installed and a model pulled (e.g. `ollama pull qwen2.5:7b`)
+- For local LLM mode: [Ollama](https://ollama.com) installed and a model pulled (e.g. `ollama pull qwen2.5:7b`)
 - A microphone
 
 ---
@@ -87,16 +90,21 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 
 ```json
 {
-    "stt_engine":         "whisper",
+    "stt_engine":         "deepgram",
     "stt_model":          "small",
     "stt_language":       "pt",
-    "llm_provider":       "ollama_cloud",
-    "llm_url":            "https://ollama.com",
-    "llm_model":          "gpt-oss:120b-cloud",
-    "ollama_api_key":     "YOUR_OLLAMA_CLOUD_KEY",
+    "deepgram_api_key":   "YOUR_DEEPGRAM_KEY",
+    "deepgram_model":     "nova-2",
+    "deepgram_endpointing_ms": 250,
+    "proactive_mode":      false,
+    "proactive_interval_sec": 900,
+    "llm_provider":       "groq",
+    "llm_url":            "https://api.groq.com/openai/v1",
+    "llm_model":          "llama-3.3-70b-versatile",
+    "groq_api_key":       "YOUR_GROQ_API_KEY",
     "vision_model":       "llava:7b",
     "tts_engine":         "elevenlabs",
-    "tts_voice":          "pNInz6obpgDQGcFmaJgB",
+    "tts_voice":          "GIuLCSVfgJaUuh7hYOY8",
     "elevenlabs_api_key": "YOUR_ELEVENLABS_KEY",
     "allow_code_execution": false
 }
@@ -104,15 +112,20 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 
 | Key | Values | Default |
 |-----|--------|---------|
-| `stt_engine` | `whisper` / `vosk` | `whisper` |
+| `stt_engine` | `deepgram` / `whisper` / `vosk` | `deepgram` (first boot) |
 | `stt_model` | `tiny` / `base` / `small` / `medium` / `large-v3` | `base` |
 | `stt_language` | `auto` or ISO code (`tr`, `en`, `de` …) | `auto` |
-| `llm_provider` | `ollama` / `ollama_cloud` / `openai` | `ollama_cloud` (first boot) |
-| `llm_url` | API base URL | `https://ollama.com` (cloud) |
-| `llm_model` | Model name | `gpt-oss:120b-cloud` |
+| `deepgram_api_key` | Deepgram token | — |
+| `deepgram_endpointing_ms` | endpointing in ms for live STT | `250` |
+| `proactive_mode` | enable idle proactive suggestions | `false` |
+| `proactive_interval_sec` | idle seconds before proactive nudge | `900` |
+| `llm_provider` | `groq` / `ollama` / `ollama_cloud` / `openai` | `groq` (first boot) |
+| `llm_url` | API base URL | `https://api.groq.com/openai/v1` (first boot) |
+| `llm_model` | Model name | `llama-3.3-70b-versatile` (first boot) |
+| `groq_api_key` | Groq bearer token | — |
 | `ollama_api_key` | Ollama Cloud bearer token | — |
 | `tts_engine` | `edgetts` / `kokoro` / `elevenlabs` | `elevenlabs` (first boot) |
-| `tts_voice` | Voice name / ID depending on engine | `en-US-GuyNeural` |
+| `tts_voice` | Voice name / ID depending on engine | `GIuLCSVfgJaUuh7hYOY8` (first boot) |
 
 ---
 

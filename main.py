@@ -322,12 +322,21 @@ class JarvisLocal:
         self._turn_lock       = threading.Lock()
         self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
         self._voice_session_until  = 0.0   # follow-up voice without repeating "Jarvis"
+        self._voice_turn_seq       = 0
+        self._voice_metrics: dict[int, dict] = {}
+        self._voice_metrics_lock   = threading.Lock()
+        self._active_voice_turn_id: int | None = None
+        self._active_voice_turn_lock = threading.Lock()
         self._stt_executor        = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
         self._dashboard           = None
         self._dashboard_loop      = None
         self._dashboard_cmd_sync: queue.Queue = queue.Queue()
         self._phone_pcm_sync:    queue.Queue = queue.Queue()
         self._phone_active        = False
+        self._proactive_mode      = bool(self._config.get("proactive_mode", False))
+        self._proactive_interval_sec = int(self._config.get("proactive_interval_sec", 900))
+        self._last_user_activity  = time.time()
+        self._last_proactive_at   = 0.0
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -352,12 +361,139 @@ class JarvisLocal:
     def _voice_session_secs(self) -> float:
         return float(self._config.get("voice_session_sec", 45))
 
+    def _mark_user_activity(self) -> None:
+        self._last_user_activity = time.time()
+
+    def _proactive_worker(self) -> None:
+        """Optional proactive nudges when the assistant is idle for long periods."""
+        if self._proactive_interval_sec < 60:
+            self._proactive_interval_sec = 60
+        prompts = [
+            "Sir, if you want I can check your calendar and summarize the next commitments.",
+            "Sir, I can run a quick system health check whenever you want.",
+            "Sir, I am ready to draft messages, emails, or reminders if needed.",
+        ]
+        idx = 0
+        while True:
+            time.sleep(5)
+            if not self._proactive_mode:
+                continue
+            if self.ui.muted or self._mic_blocked():
+                continue
+            now = time.time()
+            if now - self._last_user_activity < self._proactive_interval_sec:
+                continue
+            if now - self._last_proactive_at < self._proactive_interval_sec:
+                continue
+            with self._speaking_lock:
+                if self._speaking:
+                    continue
+            if self._in_voice_session():
+                continue
+
+            self.speak(prompts[idx % len(prompts)])
+            self._last_proactive_at = now
+            self._last_user_activity = now
+            idx += 1
+
     def _extend_voice_session(self) -> None:
         """Keep listening for follow-up questions without saying Jarvis again."""
         self._voice_session_until = time.time() + self._voice_session_secs()
 
     def _in_voice_session(self) -> bool:
         return time.time() < self._voice_session_until
+
+    def _begin_voice_turn(self, stt_ms: float) -> int:
+        """Create a new voice-turn metric context."""
+        with self._voice_metrics_lock:
+            self._voice_turn_seq += 1
+            turn_id = self._voice_turn_seq
+            self._voice_metrics[turn_id] = {
+                "t0": time.time(),
+                "stt_ms": int(stt_ms) if stt_ms > 0 else None,
+                "first_token_ms": None,
+                "first_sentence_ms": None,
+                "first_audio_ms": None,
+            }
+            # Keep memory bounded.
+            if len(self._voice_metrics) > 20:
+                oldest = sorted(self._voice_metrics.keys())[:-20]
+                for old_id in oldest:
+                    self._voice_metrics.pop(old_id, None)
+        return turn_id
+
+    def _is_turn_active(self, turn_id: int | None) -> bool:
+        if turn_id is None:
+            return True
+        with self._active_voice_turn_lock:
+            return self._active_voice_turn_id == turn_id
+
+    def _activate_voice_turn(self, stt_ms: float) -> int:
+        """Activate a new voice turn and cancel stale audio from previous turns."""
+        turn_id = self._begin_voice_turn(stt_ms)
+        with self._active_voice_turn_lock:
+            self._active_voice_turn_id = turn_id
+
+        # Cancel currently playing/queued audio from older turns.
+        try:
+            if self._tts:
+                self._tts.stop()
+        except Exception:
+            pass
+        while True:
+            try:
+                self._tts_queue.get_nowait()
+                self._tts_queue.task_done()
+            except queue.Empty:
+                break
+
+        return turn_id
+
+    def _set_voice_metric(self, turn_id: int | None, key: str, value_ms: int) -> None:
+        if turn_id is None:
+            return
+        with self._voice_metrics_lock:
+            entry = self._voice_metrics.get(turn_id)
+            if not entry:
+                return
+            if entry.get(key) is None:
+                entry[key] = value_ms
+
+    def _voice_turn_elapsed_ms(self, turn_id: int | None) -> int | None:
+        if turn_id is None:
+            return None
+        with self._voice_metrics_lock:
+            entry = self._voice_metrics.get(turn_id)
+            if not entry:
+                return None
+            t0 = entry.get("t0")
+            if not isinstance(t0, (int, float)):
+                return None
+            return int((time.time() - t0) * 1000)
+
+    def _on_tts_start_for_turn(self, turn_id: int | None) -> None:
+        """Called right before TTS synthesis starts for a voice turn."""
+        if turn_id is None:
+            return
+        if not self._is_turn_active(turn_id):
+            return
+        elapsed = self._voice_turn_elapsed_ms(turn_id)
+        if elapsed is None:
+            return
+        self._set_voice_metric(turn_id, "first_audio_ms", elapsed)
+        with self._voice_metrics_lock:
+            entry = self._voice_metrics.get(turn_id, {})
+            stt_ms = entry.get("stt_ms")
+            token_ms = entry.get("first_token_ms")
+            sent_ms = entry.get("first_sentence_ms")
+            audio_ms = entry.get("first_audio_ms")
+        self.ui.write_log(
+            "SYS: 📊 voice-latency "
+            f"stt={stt_ms if stt_ms is not None else '-'}ms "
+            f"token={token_ms if token_ms is not None else '-'}ms "
+            f"sentence={sent_ms if sent_ms is not None else '-'}ms "
+            f"audio={audio_ms if audio_ms is not None else '-'}ms"
+        )
 
     # ------------------------------------------------------------------
     # Remote dashboard (phone control via QR on port 8000)
@@ -610,13 +746,22 @@ class JarvisLocal:
         self._tts_ready.wait(timeout=120)
 
         while True:
-            text = self._tts_queue.get()
+            item = self._tts_queue.get()
+            if isinstance(item, tuple):
+                text, turn_id = item
+            else:
+                text, turn_id = item, None
             try:
+                if turn_id is not None and not self._is_turn_active(turn_id):
+                    continue
                 if text and self._tts:
                     with self._speaking_lock:
                         self._speaking = True
                     self.ui.set_state("SPEAKING")
-                    self._tts.speak(text)
+                    self._tts.speak(
+                        text,
+                        on_start=lambda tid=turn_id: self._on_tts_start_for_turn(tid),
+                    )
             except Exception as e:
                 print(f"[TTS] speak error: {e}")
             finally:
@@ -642,12 +787,12 @@ class JarvisLocal:
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, *, turn_id: int | None = None) -> None:
         if not text or not self._tts:
             return
         with self._speaking_lock:
             self._speaking = True
-        self._tts_queue.put(text)
+        self._tts_queue.put((text, turn_id))
 
     def speak_error(self, tool_name: str, error) -> None:
         short = str(error)[:120]
@@ -752,6 +897,7 @@ class JarvisLocal:
     # ------------------------------------------------------------------
 
     def _on_text_command(self, text: str) -> None:
+        self._mark_user_activity()
         self._text_queue.put(text)
 
     # ------------------------------------------------------------------
@@ -1011,7 +1157,7 @@ class JarvisLocal:
         """Skip tool schema for casual chat — prevents Groq tool_use_failed errors."""
         return bool(self._ACTION_RE.search(user_text))
 
-    def _process_message(self, user_text: str, *, from_voice: bool = False) -> None:
+    def _process_message(self, user_text: str, *, from_voice: bool = False, stt_ms: float = 0.0) -> None:
         """
         Full turn: user_text → LLM stream → TTS (overlapped) → tool execution
 
@@ -1024,14 +1170,29 @@ class JarvisLocal:
         only kicks in for pure conversational replies — which is exactly when
         it matters most.
         """
+        voice_turn_id = self._activate_voice_turn(stt_ms) if from_voice else None
         with self._turn_lock:
-            self._process_message_locked(user_text, from_voice=from_voice)
+            self._process_message_locked(
+                user_text,
+                from_voice=from_voice,
+                stt_ms=stt_ms,
+                voice_turn_id=voice_turn_id,
+            )
 
-    def _process_message_locked(self, user_text: str, *, from_voice: bool = False) -> None:
+    def _process_message_locked(
+        self,
+        user_text: str,
+        *,
+        from_voice: bool = False,
+        stt_ms: float = 0.0,
+        voice_turn_id: int | None = None,
+    ) -> None:
         self.ui.set_state("THINKING")
         prefix = "Voz" if from_voice else "You"
         self.ui.write_log(f"{prefix}: {user_text}")
         self.ui.add_history("user", user_text)
+        if from_voice and voice_turn_id is None:
+            voice_turn_id = self._activate_voice_turn(stt_ms)
 
         self._conversation.append({"role": "user", "content": user_text})
 
@@ -1066,6 +1227,9 @@ class JarvisLocal:
         _first_sentence_logged = False
 
         for _round in range(MAX_TOOL_ROUNDS):
+            if from_voice and not self._is_turn_active(voice_turn_id):
+                self.ui.write_log("SYS: ↻ voice turn superseded by newer command.")
+                return
             final_content    = ""
             final_tool_calls: list = []
             # Sentences already queued to TTS during streaming (may be empty
@@ -1084,20 +1248,25 @@ class JarvisLocal:
                     provider=chat_provider if _use_chat_route else None,
                     base_url=chat_url if _use_chat_route else None,
                 ):
+                    if from_voice and not self._is_turn_active(voice_turn_id):
+                        self.ui.write_log("SYS: ↻ voice stream cancelled (newer turn active).")
+                        return
                     if event["type"] == "chunk":
                         if _round == 0 and not _first_chunk_logged:
                             _first_chunk_logged = True
                             _lat = int((time.time() - _t0) * 1000)
+                            self._set_voice_metric(voice_turn_id, "first_token_ms", _lat)
                             _route = chat_provider if _use_chat_route else "power"
                             self.ui.write_log(f"SYS: ⚡ first token {_lat}ms ({_route})")
                     elif event["type"] == "sentence":
                         if _round == 0 and not _first_sentence_logged:
                             _first_sentence_logged = True
                             _lat = int((time.time() - _t0) * 1000)
+                            self._set_voice_metric(voice_turn_id, "first_sentence_ms", _lat)
                             self.ui.write_log(f"SYS: 🔊 first sentence {_lat}ms")
                         # Voice: speak only the first sentence (faster turn-around).
                         if not from_voice or not _streamed:
-                            self.speak(event["text"])
+                            self.speak(event["text"], turn_id=voice_turn_id)
                         _streamed.append(event["text"])
                         self.ui.stream_sentence(event["text"])
                     elif event["type"] == "done":
@@ -1117,7 +1286,7 @@ class JarvisLocal:
                     self._conversation.append(assistant_msg)
                     if not _streamed:
                         self.ui.write_log(f"Jarvis: {reply}")
-                        self.speak(reply)
+                        self.speak(reply, turn_id=voice_turn_id)
                     self.ui.add_history("jarvis", reply)
                     self._persist_assistant(reply)
                     self._dashboard_broadcast(
@@ -1159,7 +1328,7 @@ class JarvisLocal:
                 self.ui.add_history("jarvis", final_content)
                 self._persist_assistant(final_content)
                 if not _streamed:
-                    self.speak(final_content)
+                    self.speak(final_content, turn_id=voice_turn_id)
                 break
 
             # ── Execute tools ─────────────────────────────────────────────────
@@ -1216,7 +1385,7 @@ class JarvisLocal:
                 self.ui.write_log(f"Jarvis: {_ack}")
                 self.ui.add_history("jarvis", _ack)
                 self._persist_assistant(_ack)
-                self.speak(_ack)
+                self.speak(_ack, turn_id=voice_turn_id)
                 _replied = True
                 break
 
@@ -1229,13 +1398,16 @@ class JarvisLocal:
                 self.ui.write_log(f"Jarvis: {_reply}")
                 self.ui.add_history("jarvis", _reply)
                 self._persist_assistant(_reply)
-                self.speak(_reply)
+                self.speak(_reply, turn_id=voice_turn_id)
                 _replied = True
                 break
 
         if not _replied:
             self.ui.write_log("ERR: LLM — empty response after all rounds")
-            self.speak("Desculpe senhor, tive um problema ao processar. Pode repetir?")
+            self.speak(
+                "Desculpe senhor, tive um problema ao processar. Pode repetir?",
+                turn_id=voice_turn_id,
+            )
 
         if from_voice and _replied:
             self._extend_voice_session()
@@ -1261,14 +1433,16 @@ class JarvisLocal:
 
         if self._continuous_mode:
             self.ui.write_log(f"USER: '{text}'")
-            self._process_message(text, from_voice=True)
+            self._mark_user_activity()
+            self._process_message(text, from_voice=True, stt_ms=stt_ms)
             return
 
         # After "Jarvis, ..." keep the conversation open for ~45s (no wake word needed).
         if self._in_voice_session():
             self.ui.write_log(f"VOZ (sessão): '{text}'")
             self._extend_voice_session()
-            self._process_message(text, from_voice=True)
+            self._mark_user_activity()
+            self._process_message(text, from_voice=True, stt_ms=stt_ms)
             return
 
         is_wake, command = self._check_wake_word(text)
@@ -1276,7 +1450,8 @@ class JarvisLocal:
             self._extend_voice_session()
             if command:
                 self.ui.write_log(f"WAKE: '{text}' → '{command}'")
-                self._process_message(command, from_voice=True)
+                self._mark_user_activity()
+                self._process_message(command, from_voice=True, stt_ms=stt_ms)
             else:
                 self.ui.write_log(f"WAKE: '{text}' (aguardando comando)")
                 self.speak("Sim?")
@@ -1306,6 +1481,8 @@ class JarvisLocal:
                 api_key=self._config.get("deepgram_api_key"),
                 model=self._config.get("deepgram_model", "nova-2"),
                 language=self._config.get("stt_language", "pt"),
+                endpointing_ms=int(self._config.get("deepgram_endpointing_ms", 250)),
+                utterance_end_ms=int(self._config.get("deepgram_utterance_end_ms", 1000)),
             )
             live.start()
         except Exception as e:
@@ -1582,6 +1759,7 @@ class JarvisLocal:
 
             threading.Thread(target=self._tts_worker,        daemon=True).start()
             threading.Thread(target=self._text_command_loop,  daemon=True).start()
+            threading.Thread(target=self._proactive_worker,   daemon=True).start()
 
             # STT loop — blocks this thread forever
             if stt_engine == "vosk":

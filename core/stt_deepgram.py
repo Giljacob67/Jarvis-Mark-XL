@@ -126,6 +126,8 @@ class DeepgramLiveSTT:
         language: str | None = None,
         on_interim: Callable[[str], None] | None = None,
         sample_rate: int = 16_000,
+        endpointing_ms: int = 250,
+        utterance_end_ms: int = 1000,
     ):
         self._api_key = (api_key or _load_api_key()).strip()
         if not self._api_key:
@@ -136,6 +138,8 @@ class DeepgramLiveSTT:
         self._sample_rate = sample_rate
         self._on_final = on_final
         self._on_interim = on_interim
+        self._endpointing_ms = max(100, min(int(endpointing_ms), 1000))
+        self._utterance_end_ms = max(1000, int(utterance_end_ms))
         self._ws = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -154,8 +158,8 @@ class DeepgramLiveSTT:
             "sample_rate":      self._sample_rate,
             "channels":         1,
             "interim_results":  "true",
-            "endpointing":      300,
-            "utterance_end_ms": 1000,
+            "endpointing":      self._endpointing_ms,
+            "utterance_end_ms": self._utterance_end_ms,
             "punctuate":        "true",
         })
         return f"wss://api.deepgram.com/v1/listen?{q}"
