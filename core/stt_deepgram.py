@@ -147,6 +147,7 @@ class DeepgramLiveSTT:
         self._connected = False
         self._closed = False
         self._utterance_start: float | None = None
+        self._last_interim_at: float | None = None
         log.info("Deepgram live ready (model=%s, lang=%s)", self._model, self._language)
 
     def _build_url(self) -> str:
@@ -187,16 +188,23 @@ class DeepgramLiveSTT:
             if not text:
                 return
             if not data.get("is_final"):
+                now = time.time()
                 if self._utterance_start is None:
-                    self._utterance_start = time.time()
+                    self._utterance_start = now
+                self._last_interim_at = now
                 if self._on_interim:
                     self._on_interim(text)
                 return
             if data.get("speech_final"):
                 stt_ms = 0.0
-                if self._utterance_start is not None:
-                    stt_ms = (time.time() - self._utterance_start) * 1000
+                now = time.time()
+                if self._last_interim_at is not None:
+                    # Real recognition tail-latency: after last interim token.
+                    stt_ms = (now - self._last_interim_at) * 1000
+                elif self._utterance_start is not None:
+                    stt_ms = (now - self._utterance_start) * 1000
                 self._utterance_start = None
+                self._last_interim_at = None
                 self._on_final(text, stt_ms)
 
         def _on_error(ws, err) -> None:

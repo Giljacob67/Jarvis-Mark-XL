@@ -1462,15 +1462,21 @@ class JarvisLocal:
         from core.stt_deepgram import DeepgramLiveSTT
 
         _last_interim = ""
+        _last_interim_log_at = 0.0
         _voice_q: queue.Queue = queue.Queue()
 
         def _on_final(transcript: str, stt_ms: float) -> None:
             _voice_q.put((transcript, stt_ms))
 
         def _on_interim(transcript: str) -> None:
-            nonlocal _last_interim
-            if transcript != _last_interim and len(transcript) > 3:
+            nonlocal _last_interim, _last_interim_log_at
+            now = time.time()
+            changed = transcript != _last_interim
+            grew = len(transcript) >= len(_last_interim) + 8
+            cooled_down = (now - _last_interim_log_at) >= 0.8
+            if changed and len(transcript) > 3 and (grew or cooled_down):
                 _last_interim = transcript
+                _last_interim_log_at = now
                 self.ui.write_log(f"SYS: 🎤 …{transcript[-40:]}")
 
         try:
