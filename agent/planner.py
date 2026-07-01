@@ -50,6 +50,7 @@ web_search
   mode: "search" or "compare" (optional, default: search)
   items: list of strings (optional, for compare mode)
   aspect: string (optional, for compare mode)
+  provider: "auto" | "brave" | "duckduckgo" (optional)
 
 game_updater
   action: "update" | "install" | "list" | "download_status" | "schedule" (required)

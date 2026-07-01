@@ -41,7 +41,8 @@ TOOL_DECLARATIONS = [
                 "query":  {"type": "STRING", "description": "Search query"},
                 "mode":   {"type": "STRING", "description": "search (default) or compare"},
                 "items":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Items to compare"},
-                "aspect": {"type": "STRING", "description": "price | specs | reviews"}
+                "aspect": {"type": "STRING", "description": "price | specs | reviews"},
+                "provider": {"type": "STRING", "description": "auto | brave | duckduckgo"},
             },
             "required": ["query"]
         }

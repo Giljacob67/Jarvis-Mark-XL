@@ -102,6 +102,8 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
     "llm_url":            "https://api.groq.com/openai/v1",
     "llm_model":          "llama-3.3-70b-versatile",
     "groq_api_key":       "YOUR_GROQ_API_KEY",
+    "brave_api_key":      "YOUR_BRAVE_SEARCH_API_KEY",
+    "brave_search_country": "BR",
     "vision_model":       "llava:7b",
     "tts_engine":         "elevenlabs",
     "tts_voice":          "GIuLCSVfgJaUuh7hYOY8",
@@ -123,6 +125,8 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 | `llm_url` | API base URL | `https://api.groq.com/openai/v1` (first boot) |
 | `llm_model` | Model name | `llama-3.3-70b-versatile` (first boot) |
 | `groq_api_key` | Groq bearer token | — |
+| `brave_api_key` | Brave Search API token (optional for web_search) | — |
+| `brave_search_country` | Country code for Brave search ranking | `BR` |
 | `ollama_api_key` | Ollama Cloud bearer token | — |
 | `tts_engine` | `edgetts` / `kokoro` / `elevenlabs` | `elevenlabs` (first boot) |
 | `tts_voice` | Voice name / ID depending on engine | `GIuLCSVfgJaUuh7hYOY8` (first boot) |
