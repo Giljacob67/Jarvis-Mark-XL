@@ -12,6 +12,7 @@ from core.llm_client import (
     _parse_ollama_response,
     _parse_openai_tool_calls,
     _is_model_not_found,
+    _sanitize_provider_model,
     _SENT_END,
 )
 
@@ -116,3 +117,12 @@ def test_sentence_end_regex():
     assert _SENT_END.search("Stop! Now.")
     assert not _SENT_END.search("No punctuation here")
     assert not _SENT_END.search("Version 3.5 is new")
+
+
+def test_sanitize_provider_model_for_groq_rejects_ollama_style():
+    assert _sanitize_provider_model("gpt-oss:120b-cloud", "groq", fast=False) == "llama-3.3-70b-versatile"
+    assert _sanitize_provider_model("gpt-oss:120b-cloud", "groq", fast=True) == "llama-3.1-8b-instant"
+
+
+def test_sanitize_provider_model_keeps_valid():
+    assert _sanitize_provider_model("llama-3.3-70b-versatile", "groq", fast=False) == "llama-3.3-70b-versatile"

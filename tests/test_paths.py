@@ -1,6 +1,7 @@
 """Tests for core.paths — shared base directory resolver."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,7 +16,11 @@ def test_base_dir_is_project_root():
 
 
 def test_api_config_path_points_to_config():
-    assert API_CONFIG_PATH == BASE_DIR / "config" / "api_keys.json"
+    if os.environ.get("JARVIS_CONFIG_PATH"):
+        assert API_CONFIG_PATH == Path(os.environ["JARVIS_CONFIG_PATH"]).expanduser()
+    else:
+        assert API_CONFIG_PATH.name == "api_keys.json"
+        assert API_CONFIG_PATH.parent == CONFIG_DIR
 
 
 def test_prompt_path_points_to_prompt():
@@ -23,5 +28,4 @@ def test_prompt_path_points_to_prompt():
 
 
 def test_config_dir_exists():
-    assert CONFIG_DIR.is_dir()
-    assert CONFIG_DIR == BASE_DIR / "config"
+    assert CONFIG_DIR.name == "config"

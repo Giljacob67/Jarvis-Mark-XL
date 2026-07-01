@@ -182,6 +182,30 @@ def _default_url_for_provider(provider: str) -> str:
     }.get(provider, _DEFAULTS["llm_url"])
 
 
+def _default_model_for_provider(provider: str, *, fast: bool) -> str:
+    if provider == "groq":
+        return "llama-3.1-8b-instant" if fast else "llama-3.3-70b-versatile"
+    if provider == "ollama_cloud":
+        return "gpt-oss:120b-cloud"
+    if provider == "ollama":
+        return _DEFAULTS["llm_model"]
+    return _DEFAULTS["llm_model"]
+
+
+def _sanitize_provider_model(model: str, provider: str, *, fast: bool) -> str:
+    m = (model or "").strip()
+    if not m:
+        return _default_model_for_provider(provider, fast=fast)
+
+    if provider == "groq":
+        # Groq models are OpenAI-style names; Ollama-style names often contain ':'.
+        if ":" in m or m.endswith("-cloud"):
+            fallback = _default_model_for_provider(provider, fast=fast)
+            log.warning("Model '%s' is incompatible with Groq; using '%s'", m, fallback)
+            return fallback
+    return m
+
+
 def get_fast_llm_model() -> str:
     """Fast model for casual chat (low latency). Falls back to llm_model."""
     cfg = _load_config()
@@ -192,7 +216,8 @@ def get_fast_llm_model() -> str:
         or cfg.get("llm_fallback_model", "").strip()
         or primary
     )
-    return normalize_model_name(raw, provider)
+    model = normalize_model_name(raw, provider)
+    return _sanitize_provider_model(model, provider, fast=True)
 
 
 def get_chat_llm_config() -> tuple[str, str, str]:
@@ -233,7 +258,8 @@ def get_power_llm_model() -> str:
     cfg = _load_config()
     provider = get_llm_provider()
     raw = cfg.get("llm_power_model", "").strip() or cfg.get("llm_model", _DEFAULTS["llm_model"])
-    return normalize_model_name(raw, provider)
+    model = normalize_model_name(raw, provider)
+    return _sanitize_provider_model(model, provider, fast=False)
 
 
 def get_llm_settings() -> tuple[str, str]:
