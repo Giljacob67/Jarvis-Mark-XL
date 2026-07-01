@@ -242,11 +242,12 @@ def get_chat_llm_config() -> tuple[str, str, str]:
     url = cfg.get("llm_url", default_url).rstrip("/") if chat_provider == primary else default_url
 
     if chat_provider == "groq":
-        model = (
+        raw_model = (
             cfg.get("llm_fast_model", "").strip()
             or cfg.get("llm_fallback_model", "").strip()
             or "llama-3.1-8b-instant"
         )
+        model = _sanitize_provider_model(raw_model, chat_provider, fast=True)
     else:
         model = get_fast_llm_model()
 
@@ -257,7 +258,14 @@ def get_power_llm_model() -> str:
     """Powerful model for tool-calling / complex tasks."""
     cfg = _load_config()
     provider = get_llm_provider()
-    raw = cfg.get("llm_power_model", "").strip() or cfg.get("llm_model", _DEFAULTS["llm_model"])
+    raw_power = cfg.get("llm_power_model", "").strip()
+    if raw_power:
+        raw = raw_power
+    elif provider == "groq":
+        # Keep tool rounds reliable even when llm_model is set for a fast chat profile.
+        raw = _default_model_for_provider(provider, fast=False)
+    else:
+        raw = cfg.get("llm_model", _DEFAULTS["llm_model"])
     model = normalize_model_name(raw, provider)
     return _sanitize_provider_model(model, provider, fast=False)
 

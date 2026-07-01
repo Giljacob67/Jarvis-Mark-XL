@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -14,6 +15,7 @@ from core.llm_client import (
     _is_model_not_found,
     _sanitize_provider_model,
     _SENT_END,
+    get_power_llm_model,
 )
 
 
@@ -126,3 +128,18 @@ def test_sanitize_provider_model_for_groq_rejects_ollama_style():
 
 def test_sanitize_provider_model_keeps_valid():
     assert _sanitize_provider_model("llama-3.3-70b-versatile", "groq", fast=False) == "llama-3.3-70b-versatile"
+
+
+def test_get_power_llm_model_defaults_to_groq_power_when_missing():
+    with patch("core.llm_client.get_llm_provider", return_value="groq"):
+        with patch("core.llm_client._load_config", return_value={"llm_provider": "groq"}):
+            assert get_power_llm_model() == "llama-3.3-70b-versatile"
+
+
+def test_get_power_llm_model_keeps_explicit_override():
+    with patch("core.llm_client.get_llm_provider", return_value="groq"):
+        with patch(
+            "core.llm_client._load_config",
+            return_value={"llm_provider": "groq", "llm_power_model": "llama-3.3-70b-versatile"},
+        ):
+            assert get_power_llm_model() == "llama-3.3-70b-versatile"
