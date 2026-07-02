@@ -755,38 +755,47 @@ class JarvisLocal:
         self._tts_ready.wait(timeout=120)
 
         while True:
-            item = self._tts_queue.get()
-            if isinstance(item, tuple):
-                text, turn_id = item
-            else:
-                text, turn_id = item, None
             try:
-                if turn_id is not None and not self._is_turn_active(turn_id):
-                    continue
-                if text and self._tts:
-                    with self._speaking_lock:
-                        self._speaking = True
-                    self.ui.set_state("SPEAKING")
-                    self._tts.speak(
-                        text,
-                        on_start=lambda tid=turn_id: self._on_tts_start_for_turn(tid),
-                    )
+                item = self._tts_queue.get()
+                if isinstance(item, tuple):
+                    text, turn_id = item
+                else:
+                    text, turn_id = item, None
+                try:
+                    if turn_id is not None and not self._is_turn_active(turn_id):
+                        text_preview = text[:40].replace("\n", " ") if text else "(empty)"
+                        self.ui.write_log(f"SYS: ✗ skip sentence (stale turn_id={turn_id}): {text_preview}...")
+                        continue
+                    sent_preview = text[:40].replace("\n", " ") if text else "(empty)"
+                    self.ui.write_log(f"SYS: 🔊 play sentence (turn_id={turn_id}): {sent_preview}...")
+                    if text and self._tts:
+                        with self._speaking_lock:
+                            self._speaking = True
+                        self.ui.set_state("SPEAKING")
+                        self._tts.speak(
+                            text,
+                            on_start=lambda tid=turn_id: self._on_tts_start_for_turn(tid),
+                        )
+                except Exception as e:
+                    self.ui.write_log(f"ERR: TTS speak error: {e}")
+                    print(f"[TTS] speak error: {e}")
+                finally:
+                    self._tts_queue.task_done()
+                    if self._tts_queue.empty():
+                        with self._speaking_lock:
+                            self._speaking = False
+                        # Keep a short echo guard without making follow-ups feel sluggish.
+                        _cd = (
+                            VOICE_SESSION_ECHO_GUARD_SEC
+                            if self._in_voice_session()
+                            else DEFAULT_ECHO_GUARD_SEC
+                        )
+                        self._listen_blocked_until = time.time() + _cd
+                        if not self.ui.muted:
+                            self.ui.set_state("LISTENING")
             except Exception as e:
-                print(f"[TTS] speak error: {e}")
-            finally:
-                self._tts_queue.task_done()
-                if self._tts_queue.empty():
-                    with self._speaking_lock:
-                        self._speaking = False
-                    # Keep a short echo guard without making follow-ups feel sluggish.
-                    _cd = (
-                        VOICE_SESSION_ECHO_GUARD_SEC
-                        if self._in_voice_session()
-                        else DEFAULT_ECHO_GUARD_SEC
-                    )
-                    self._listen_blocked_until = time.time() + _cd
-                    if not self.ui.muted:
-                        self.ui.set_state("LISTENING")
+                self.ui.write_log(f"ERR: TTS worker fatal error: {e}")
+                print(f"[TTS WORKER] fatal error: {e}")
 
     def set_speaking(self, value: bool) -> None:
         with self._speaking_lock:
@@ -802,6 +811,9 @@ class JarvisLocal:
         with self._speaking_lock:
             self._speaking = True
         self._tts_queue.put((text, turn_id))
+        qsize = self._tts_queue.qsize()
+        text_preview = text[:30].replace("\n", " ")
+        self.ui.write_log(f"SYS: 📨 enqueued (turn_id={turn_id}, queue_size={qsize}): {text_preview}...")
 
     def speak_error(self, tool_name: str, error) -> None:
         short = str(error)[:120]
@@ -1199,6 +1211,8 @@ class JarvisLocal:
         self.ui.set_state("THINKING")
         prefix = "Voz" if from_voice else "You"
         self.ui.write_log(f"{prefix}: {user_text}")
+        if from_voice:
+            self.ui.write_log(f"DEBUG: Processing with voice_turn_id={voice_turn_id}")
         self.ui.add_history("user", user_text)
         if from_voice and voice_turn_id is None:
             voice_turn_id = self._activate_voice_turn(stt_ms)
@@ -1257,8 +1271,13 @@ class JarvisLocal:
                     provider=chat_provider if _use_chat_route else None,
                     base_url=chat_url if _use_chat_route else None,
                 ):
+                    event_type = event.get("type", "unknown")
+                    if event_type == "chunk" or event_type == "sentence":
+                        self.ui.write_log(f"SYS: 📡 LLM event: {event_type}")
                     if from_voice and not self._is_turn_active(voice_turn_id):
                         self.ui.write_log("SYS: ↻ voice stream cancelled (newer turn active).")
+                        current_turn = self._active_voice_turn_id
+                        self.ui.write_log(f"DEBUG: Expected turn_id={voice_turn_id}, active turn_id={current_turn}")
                         return
                     if event["type"] == "chunk":
                         if _round == 0 and not _first_chunk_logged:
@@ -1274,6 +1293,8 @@ class JarvisLocal:
                             self._set_voice_metric(voice_turn_id, "first_sentence_ms", _lat)
                             self.ui.write_log(f"SYS: 🔊 first sentence {_lat}ms")
                         # Speak every streamed sentence to avoid partial voice replies.
+                        sent_preview = event["text"][:50].replace("\n", " ")
+                        self.ui.write_log(f"SYS: 📤 queue sentence (turn_id={voice_turn_id}): {sent_preview}...")
                         self.speak(event["text"], turn_id=voice_turn_id)
                         _streamed.append(event["text"])
                         self.ui.stream_sentence(event["text"])
