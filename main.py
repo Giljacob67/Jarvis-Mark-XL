@@ -336,6 +336,13 @@ class JarvisLocal:
     def __init__(self, ui: JarvisUI):
         self.ui               = ui
         self._config          = _load_config()
+        # AEC (PipeWire/WebRTC): mic aberto durante a fala → barge-in com
+        # caixas de som e cooldown pós-fala de ~0.6s em vez de 2-4s.
+        try:
+            from core.audio_aec import ensure_echo_cancel
+            self._aec_active = ensure_echo_cancel(self._config)
+        except Exception:
+            self._aec_active = False
         self._stt             = None
         self._tts             = None
         self._tts_fallback    = None                 # lazy EdgeTTS, used if primary fails
@@ -394,12 +401,18 @@ class JarvisLocal:
         """True when the mic should stay open DURING playback so the user can
         interrupt by saying the wake word.
 
-        Opt-in via "voice_barge_in": true — without echo cancellation the mic
-        hears the TTS voice itself, so only wake-word hits are honoured while
-        speaking (see _handle_voice_transcript); everything else is discarded.
-        Best with headphones or a mic with hardware AEC.
+        "voice_barge_in": true  → always on (headphones / hardware AEC)
+        "voice_barge_in": false → always off
+        ausente ou "auto"       → on quando o AEC do PipeWire está ativo
+        (só wake-word é honrada durante a fala; o resto é descartado).
         """
-        if not self._config.get("voice_barge_in", False):
+        cfg = self._config.get("voice_barge_in", "auto")
+        if isinstance(cfg, str):
+            enabled = self._aec_active if cfg.strip().lower() == "auto" else \
+                cfg.strip().lower() in ("true", "1", "yes")
+        else:
+            enabled = bool(cfg)
+        if not enabled:
             return False
         if self._phone_active:
             return False
@@ -825,9 +838,19 @@ class JarvisLocal:
             if not self._speaking:
                 return
             self._speaking = False
-        # Shorter cooldown during active voice session (faster follow-ups).
-        _cd = 2.0 if self._in_voice_session() else 4.0
+        # Com AEC o eco já foi cancelado — cooldown mínimo (fluidez).
+        # Sem AEC: cooldown curto em sessão ativa, longo fora dela.
+        if self._aec_active:
+            _cd = float(self._config.get("echo_guard_cooldown_sec", 0.6))
+        else:
+            _cd = 2.0 if self._in_voice_session() else 4.0
         self._listen_blocked_until = time.time() + _cd
+        # A resposta pode ter durado mais que a sessão de voz — renova ao
+        # terminar de falar (sessão ativa ou expirada há <60s, i.e. expirou
+        # DURANTE a fala), para o follow-up nunca exigir novo "Jarvis".
+        if self._voice_session_until > 0 and \
+                time.time() - self._voice_session_until < 60:
+            self._extend_voice_session()
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 

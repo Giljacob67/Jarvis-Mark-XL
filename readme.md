@@ -120,6 +120,9 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 | `proactive_morning_briefing` | `HH:MM` — daily spoken briefing: today's agenda + unread mail | `08:30` |
 | `proactive_email_checks` | List of `HH:MM` — speaks ONLY if there are unread emails | `["12:00", "15:30", "18:00"]` |
 | `proactive_event_reminders_min` | Minutes before each agenda event to remind | `[60, 15]` |
+| `aec_enabled` | `true` / `false` — WebRTC echo cancellation via PipeWire (mic stays open while Jarvis speaks) | `true` |
+| `voice_barge_in` | `true` / `false` / `auto` — interrupt speech by voice; `auto` = on when AEC is active | `auto` |
+| `echo_guard_cooldown_sec` | Post-speech mic cooldown when AEC is active | `0.6` |
 
 ---
 
