@@ -506,6 +506,27 @@ class DashboardServer:
             tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
             return bool(tok) and tok in self._tokens
 
+        # ── PWA: manifest, service worker e ícones (públicos — o iOS busca
+        # esses arquivos sem token ao instalar na Tela de Início) ──────────
+        @app.get("/manifest.json")
+        async def manifest():
+            return FileResponse(str(STATIC_DIR / "manifest.json"),
+                                media_type="application/manifest+json")
+
+        @app.get("/sw.js")
+        async def service_worker():
+            # Servido na raiz para o escopo "/" valer sem header extra.
+            return FileResponse(str(STATIC_DIR / "sw.js"),
+                                media_type="application/javascript")
+
+        @app.get("/static/{icon_name}.png")
+        async def pwa_icon(icon_name: str):
+            if icon_name not in ("icon-180", "icon-192", "icon-512"):
+                from fastapi.responses import Response
+                return Response(status_code=404)
+            return FileResponse(str(STATIC_DIR / f"{icon_name}.png"),
+                                media_type="image/png")
+
         # serve CryptoJS from local cache, fallback to CDN redirect
         @app.get("/static/crypto.js")
         async def serve_crypto():

@@ -2,8 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>JARVIS Dashboard</title>
+  <!-- PWA: instalável na Tela de Início (iPhone/iPad/Mac/Android) -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#070c14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="JARVIS">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <link rel="icon" type="image/png" href="/static/icon-192.png">
   <script src="/static/crypto.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -208,24 +217,50 @@
 
     const _wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
     const _wsUrl   = `${_wsProto}://${location.host}/ws?token=${encodeURIComponent(_authToken)}`;
-    const ws       = new WebSocket(_wsUrl);
 
-    ws.onopen    = () => {
-      sys('Remote session active.');
-      toast('Connected to JARVIS');
-      if (location.protocol !== 'https:') _showVoiceSetup('http');
-    };
-    ws.onclose   = () => sys('Connection lost — refresh to reconnect.');
-    ws.onerror   = () => sys('Connection error.');
-    ws.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.type === 'log')           append(m.speaker, m.text);
-      if (m.type === 'status')        setStatus(m.state);
-      if (m.type === 'wake')          sys('Wake word detected — connecting…');
-      if (m.type === 'sys')           sys(m.text);
-      if (m.type === 'file_received') _onFileReceived(m);
-      if (m.type === 'audio')         _playRemoteAudio(m.data, m.format);
-    };
+    // ── Reconexão automática com backoff (essencial no iOS: o Safari mata a
+    // conexão quando o app vai para background; ao voltar, religa sozinho) ──
+    let ws            = null;
+    let _wsRetryMs    = 1000;
+    let _everOpened   = false;
+
+    function _connectWS() {
+      ws = new WebSocket(_wsUrl);
+      ws.onopen = () => {
+        _wsRetryMs = 1000;
+        sys(_everOpened ? 'Reconnected.' : 'Remote session active.');
+        if (!_everOpened) toast('Connected to JARVIS');
+        _everOpened = true;
+        if (location.protocol !== 'https:') _showVoiceSetup('http');
+      };
+      ws.onclose = () => {
+        sys(`Connection lost — reconnecting in ${Math.round(_wsRetryMs / 1000)}s…`);
+        setTimeout(_connectWS, _wsRetryMs);
+        _wsRetryMs = Math.min(_wsRetryMs * 2, 15000);
+      };
+      ws.onerror   = () => { try { ws.close(); } catch (_) {} };
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === 'log')           append(m.speaker, m.text);
+        if (m.type === 'status')        setStatus(m.state);
+        if (m.type === 'wake')          sys('Wake word detected — connecting…');
+        if (m.type === 'sys')           sys(m.text);
+        if (m.type === 'file_received') _onFileReceived(m);
+        if (m.type === 'audio')         _playRemoteAudio(m.data, m.format);
+      };
+    }
+    _connectWS();
+
+    // Ao voltar do background (troca de app no iPhone), religa na hora.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && (!ws || ws.readyState > 1)) _connectWS();
+    });
+
+    // PWA: registra o service worker (torna o app instalável no Android/
+    // desktop; no iOS a instalação usa o manifest + apple-touch-icon).
+    if ('serviceWorker' in navigator && location.protocol === 'https:') {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
 
     function setStatus(s) {
       if (s === 'active') {
@@ -415,6 +450,24 @@
     let _voiceWs  = null;
     let _audioCtx = null;
     let _micStm   = null;
+    let _wakeLock = null;
+
+    // Mantém a tela acesa durante o modo voz (senão o iPhone apaga a tela
+    // e o iOS corta o microfone no meio da fala).
+    async function _acquireWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          _wakeLock = await navigator.wakeLock.request('screen');
+          _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+        }
+      } catch (_) { /* sem suporte/permissão — segue sem */ }
+    }
+    function _releaseWakeLock() {
+      if (_wakeLock) { try { _wakeLock.release(); } catch (_) {} _wakeLock = null; }
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && _voiceWs) _acquireWakeLock();   // reacquire ao voltar
+    });
     let _audioNd  = null;
 
     function _micIdle() {
@@ -601,9 +654,11 @@
       _voiceWs  = ws;
       _audioCtx = ctx;
       _micStm   = stream;
+      _acquireWakeLock();
     }
 
     function _stopVoice() {
+      _releaseWakeLock();
       if (_audioNd)  { try { _audioNd.disconnect(); }  catch (_) {}; _audioNd  = null; }
       if (_audioCtx) { try { _audioCtx.close(); }      catch (_) {}; _audioCtx = null; }
       if (_micStm)   { _micStm.getTracks().forEach(t => t.stop()); _micStm = null; }
