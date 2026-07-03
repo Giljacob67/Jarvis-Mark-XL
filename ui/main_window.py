@@ -1722,6 +1722,8 @@ class MainWindow(QMainWindow):
     _state_sig   = pyqtSignal(str)
     _startup_sig = pyqtSignal(str, str)  # action, data — thread-safe startup panel control
     _history_sig = pyqtSignal(str, str)  # role, text — thread-safe history panel update
+    _phone_sig   = pyqtSignal()          # phone connected — thread-safe overlay update
+    _confirm_sig = pyqtSignal(str, object)  # text, holder — thread-safe confirm dialog
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1782,6 +1784,8 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._startup_sig.connect(self._on_startup_sig)
         self._history_sig.connect(self._history.add_turn)
+        self._phone_sig.connect(self.notify_phone_connected)
+        self._confirm_sig.connect(self._show_confirm_dialog)
 
         self._overlay: SetupOverlay | None = None
         self._startup_panel: StartupPanel | None = None
@@ -2230,6 +2234,21 @@ class MainWindow(QMainWindow):
         if self._remote_overlay and self._remote_overlay.isVisible():
             self._remote_overlay.mark_connected()
 
+    def _show_confirm_dialog(self, text: str, holder: dict) -> None:
+        """GUI-thread slot for confirm requests coming from worker threads."""
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle("Jarvis — Confirm Action")
+            box.setText(text)
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            QTimer.singleShot(15_000, box.reject)   # auto-reject
+            holder["result"] = box.exec() == QMessageBox.StandardButton.Yes
+        finally:
+            holder["event"].set()
+
     def _open_remote(self) -> None:
         if not self.on_remote_clicked:
             self._log.append_log("SYS: Dashboard remoto indisponível.")
@@ -2459,7 +2478,20 @@ class JarvisUI:
         self._win.on_remote_clicked = cb
 
     def notify_phone_connected(self) -> None:
-        self._win.notify_phone_connected()
+        self._win._phone_sig.emit()   # queued to GUI thread — never mutate widgets here
+
+    def confirm_action(self, text: str, timeout: float = 20.0) -> bool:
+        """Thread-safe blocking confirm dialog. Call from worker threads.
+
+        The dialog runs on the GUI thread (Qt widgets must never be created
+        on worker threads); this caller blocks on an Event for the answer.
+        Auto-reject after 15s on the dialog side; `timeout` here is the
+        outer safety net. Defaults to False (deny) on timeout.
+        """
+        holder: dict = {"event": threading.Event(), "result": False}
+        self._win._confirm_sig.emit(text, holder)
+        holder["event"].wait(timeout)
+        return bool(holder.get("result"))
 
     def set_state(self, state: str):
         self._win._state_sig.emit(state)

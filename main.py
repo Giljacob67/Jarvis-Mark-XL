@@ -323,6 +323,10 @@ class JarvisLocal:
         self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
         self._voice_session_until  = 0.0   # follow-up voice without repeating "Jarvis"
         self._stt_executor        = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
+        # Long-lived: a per-call `with ThreadPoolExecutor(...)` would block on
+        # shutdown(wait=True) until a hung tool finishes, freezing the pipeline
+        # even after the timeout message was already delivered.
+        self._tool_executor       = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool")
         self._dashboard           = None
         self._dashboard_loop      = None
         self._dashboard_cmd_sync: queue.Queue = queue.Queue()
@@ -447,9 +451,15 @@ class JarvisLocal:
             text = (text or "").strip()
             if not text:
                 continue
-            self.ui.write_log(f"[Celular]: {text}")
-            self._dashboard_broadcast({"type": "log", "speaker": "user", "text": text})
-            self._process_message(text, from_voice=False)
+            try:
+                self.ui.write_log(f"[Celular]: {text}")
+                self._dashboard_broadcast({"type": "log", "speaker": "user", "text": text})
+                self._process_message(text, from_voice=False)
+            except Exception as e:
+                # An uncaught error here would kill this daemon thread and
+                # silently disable phone-remote commands for the session.
+                traceback.print_exc()
+                self.ui.write_log(f"ERR: comando remoto — {e}")
 
     def _phone_audio_worker(self) -> None:
         """Transcribe phone mic PCM bursts (WebSocket from mobile browser)."""
@@ -709,27 +719,20 @@ class JarvisLocal:
         self.speak(f"A ferramenta {tool_name} encontrou um erro.")
 
     def _confirm_tool(self, name: str, args: dict) -> bool:
-        """Show a blocking Qt confirmation dialog. Returns True if approved."""
+        """Blocking confirmation, safe to call from worker threads.
+
+        The dialog itself is created on the Qt GUI thread via signal
+        (creating widgets here — always a background thread — is undefined
+        behaviour and could crash/hang the app).
+        """
         try:
-            from PyQt6.QtWidgets import QMessageBox, QApplication
             action_str = f"{name}"
             if args:
                 key_args = {k: v for k, v in args.items() if k not in ("player",)}
                 action_str += f"\n{key_args}"
-            app = QApplication.instance()
-            if app is None:
+            if not hasattr(self.ui, "confirm_action"):
                 return True  # no UI — allow by default
-            box = QMessageBox()
-            box.setWindowTitle("Jarvis — Confirm Action")
-            box.setText(f"Confirm: {action_str}?")
-            box.setStandardButtons(
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            box.setDefaultButton(QMessageBox.StandardButton.No)
-            # 15s auto-reject via singleShot
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(15_000, lambda: box.reject())
-            return box.exec() == QMessageBox.StandardButton.Yes
+            return self.ui.confirm_action(f"Confirm: {action_str}?")
         except Exception as e:
             print(f"[Confirm] Dialog error: {e} — allowing by default")
             return True
@@ -749,6 +752,9 @@ class JarvisLocal:
         old_llm_model  = self._config.get("llm_model", "")
         new_stt_engine = new_config.get("stt_engine", "whisper").lower()
         self._config = new_config
+        # Cached at __init__ — must be refreshed here or toggling it in the
+        # Configure panel silently does nothing until restart.
+        self._continuous_mode = new_config.get("continuous_mode", False)
 
         # Install any packages required by the new config
         try:
@@ -1016,15 +1022,21 @@ class JarvisLocal:
         result = "Done."
         _t0 = time.time()
         try:
-            with ThreadPoolExecutor(max_workers=1) as _ex:
-                _fut = _ex.submit(_dispatch)
-                try:
-                    result = _fut.result(timeout=_tool_timeout)
-                except FuturesTimeout:
-                    _fut.cancel()
-                    msg = f"Tool '{name}' timed out after {_tool_timeout}s, sir."
-                    self.speak(msg)
-                    result = msg
+            # Long-lived executor: on timeout the future is abandoned (a running
+            # task can't be cancelled) and the pipeline moves on immediately —
+            # the old per-call `with ThreadPoolExecutor` blocked on shutdown
+            # until the hung tool actually returned.
+            _fut = self._tool_executor.submit(_dispatch)
+            try:
+                result = _fut.result(timeout=_tool_timeout)
+            except FuturesTimeout:
+                _fut.cancel()
+                self.ui.write_log(
+                    f"WARN: '{name}' ainda em execução em segundo plano (timeout {_tool_timeout}s)"
+                )
+                msg = f"A ferramenta {name} excedeu o tempo limite de {_tool_timeout} segundos."
+                self.speak(msg)
+                result = msg
 
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
@@ -1506,10 +1518,16 @@ class JarvisLocal:
         while True:
             try:
                 text = self._text_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
                 if text.strip():
                     self._process_message(text)
-            except queue.Empty:
-                pass
+            except Exception as e:
+                # An uncaught error here would kill this daemon thread and
+                # silently disable typed commands for the rest of the session.
+                traceback.print_exc()
+                self.ui.write_log(f"ERR: comando — {e}")
 
     # ------------------------------------------------------------------
     # Entry point

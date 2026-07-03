@@ -357,6 +357,7 @@ class _BrowserSession:
         self._loop:    asyncio.AbstractEventLoop | None = None
         self._thread:  threading.Thread | None          = None
         self._ready    = threading.Event()
+        self._init_error: Exception | None              = None
 
         self._pw:      Playwright     | None = None
         self._context: BrowserContext | None = None
@@ -365,6 +366,7 @@ class _BrowserSession:
     def start(self):
         if self._thread and self._thread.is_alive():
             return
+        self._init_error = None
         self._thread = threading.Thread(
             target=self._run_loop,
             daemon=True,
@@ -372,12 +374,25 @@ class _BrowserSession:
         )
         self._thread.start()
         self._ready.wait(timeout=20)
+        if self._init_error is not None:
+            self._loop = None
+            raise RuntimeError(
+                f"Playwright init failed for '{self.browser_name}': {self._init_error}"
+            ) from self._init_error
 
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._async_init())
-        self._ready.set()
+        try:
+            self._loop.run_until_complete(self._async_init())
+        except Exception as e:
+            # Without this the thread died silently before _ready was set:
+            # start() timed out, the real cause was lost, and every later
+            # run() blocked for its full timeout on a dead loop.
+            self._init_error = e
+            return
+        finally:
+            self._ready.set()
         self._loop.run_forever()
 
     async def _async_init(self):
