@@ -70,6 +70,13 @@ def _build_sandbox() -> dict:
 
 
 def _execute_generated_code(code: str, player=None) -> str:
+    # Security gate — this exec()s LLM-generated code (the hand-rolled sandbox
+    # is not escape-proof: getattr/hasattr are exposed), so it MUST honour
+    # allow_code_execution like the other generated-code paths.
+    from core.security import code_execution_allowed, CODE_EXEC_DISABLED_MSG
+    if not code_execution_allowed():
+        return CODE_EXEC_DISABLED_MSG
+
     if not code or code.strip() == "UNSAFE":
         return "This action cannot be performed safely."
 

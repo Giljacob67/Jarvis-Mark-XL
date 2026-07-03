@@ -43,6 +43,7 @@ def test_create_tts_player_elevenlabs():
         mock_engine.assert_called_once_with(
             api_key="test-key",
             voice_id="voice-123",
+            model_id="eleven_turbo_v2_5",
             stability=0.6,
             similarity_boost=0.8,
             speed=1.1,

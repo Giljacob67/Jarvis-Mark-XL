@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import queue as _queue
 import threading
 from collections.abc import Callable
 
@@ -60,11 +59,16 @@ def _compress_silence(
     """
     Shorten Kokoro's very long punctuation pauses (1-2 s → ≤500 ms).
     Conservative settings preserve natural prosody; only trims extreme pauses.
+
+    A ~5 ms micro-fade is applied on both sides of every removed span —
+    splicing non-contiguous samples without it produces audible clicks.
     """
     max_samp  = int(max_silence_ms * sample_rate / 1000)
     frame_len = 240                   # ~10 ms at 24 kHz
+    fade_n    = 120                   # ~5 ms at 24 kHz
     out: list[np.ndarray] = []
     silent_acc = 0
+    skipping   = False
 
     for i in range(0, len(arr), frame_len):
         chunk = arr[i : i + frame_len]
@@ -72,53 +76,104 @@ def _compress_silence(
             silent_acc += len(chunk)
             if silent_acc <= max_samp:
                 out.append(chunk)
+            else:
+                if not skipping and out:
+                    tail = out[-1].copy()
+                    n = min(fade_n, len(tail))
+                    tail[-n:] *= np.linspace(1.0, 0.0, n, dtype=np.float32)
+                    out[-1] = tail
+                skipping = True
         else:
+            if skipping:
+                chunk = chunk.copy()
+                n = min(fade_n, len(chunk))
+                chunk[:n] *= np.linspace(0.0, 1.0, n, dtype=np.float32)
+                skipping = False
             silent_acc = 0
             out.append(chunk)
 
     return np.concatenate(out) if out else arr
 
 
-def _play_np(samples, sample_rate: int) -> None:
-    """Play float32 mono (or stereo) audio via sounddevice.
-    Accepts numpy arrays or PyTorch tensors.
+class AudioOutput:
+    """Persistent playback sink — ONE OutputStream kept open across chunks
+    and sentences.
+
+    The previous per-chunk sd.play()/sd.wait() opened and closed a PortAudio
+    stream for every chunk, producing pops on PulseAudio/PipeWire and gaps
+    between chunks of the same response.  Writing to one long-lived stream
+    eliminates both.
+
+    play() writes in small slices and polls `stop_evt` between them, so an
+    interrupt (barge-in) takes effect within ~90 ms even mid-chunk.
     """
-    sd.play(_to_numpy(samples), sample_rate)
-    sd.wait()
+
+    _SLICE = 2048   # frames per write (~85 ms @ 24 kHz)
+
+    def __init__(self) -> None:
+        self._stream: sd.OutputStream | None = None
+        self._rate:   int | None = None
+        self._lock    = threading.Lock()
+
+    def _ensure_stream(self, rate: int) -> sd.OutputStream:
+        with self._lock:
+            if self._stream is not None and self._rate != rate:
+                try:
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
+            if self._stream is None:
+                self._stream = sd.OutputStream(
+                    samplerate=rate, channels=1, dtype="float32"
+                )
+                self._rate = rate
+                self._stream.start()
+            elif not self._stream.active:
+                self._stream.start()   # restart after interrupt()'s abort
+            return self._stream
+
+    def play(self, samples: np.ndarray, rate: int,
+             stop_evt: threading.Event | None = None) -> None:
+        """Blocking write of a float32 mono chunk. Interruptible via stop_evt."""
+        arr = np.ascontiguousarray(_to_numpy(samples), dtype=np.float32)
+        if arr.ndim > 1:
+            arr = arr.reshape(-1)
+        stream = self._ensure_stream(rate)
+        for i in range(0, len(arr), self._SLICE):
+            if stop_evt is not None and stop_evt.is_set():
+                return
+            try:
+                stream.write(arr[i : i + self._SLICE])
+            except sd.PortAudioError:
+                # Stream aborted by interrupt() mid-write — drop the rest.
+                return
+
+    def interrupt(self) -> None:
+        """Discard pending buffers immediately (abort, not drain)."""
+        with self._lock:
+            if self._stream is not None:
+                try:
+                    self._stream.abort()
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        with self._lock:
+            if self._stream is not None:
+                try:
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
 
 
-def _play_pcm_stream(response, sample_rate: int = 24_000) -> None:
-    """Play raw int16 PCM from a streaming HTTP response as chunks arrive."""
-    import requests as _req
-    if not isinstance(response, _req.Response):
-        return
-    leftover = b""
-    with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16") as stream:
-        for chunk in response.iter_content(chunk_size=8192):
-            if not chunk:
-                continue
-            data = leftover + chunk
-            # int16 needs even byte count
-            trim = len(data) - (len(data) % 2)
-            if trim <= 0:
-                leftover = data
-                continue
-            pcm = np.frombuffer(data[:trim], dtype=np.int16)
-            stream.write(pcm)
-            leftover = data[trim:]
+# Module-level singleton: primary and fallback engines share one device handle.
+_AUDIO_OUT = AudioOutput()
 
 
-def _play_audio_bytes(audio_bytes: bytes) -> None:
-    """Decode MP3/WAV/OGG bytes and play via sounddevice (uses miniaudio)."""
-    import miniaudio
-    decoded = miniaudio.decode(
-        audio_bytes,
-        output_format=miniaudio.SampleFormat.FLOAT32,
-        nchannels=1,
-    )
-    samples = np.array(decoded.samples, dtype=np.float32)
-    sd.play(samples, decoded.sample_rate)
-    sd.wait()
+def get_audio_output() -> AudioOutput:
+    return _AUDIO_OUT
 
 
 # ---------------------------------------------------------------------------
@@ -126,19 +181,36 @@ def _play_audio_bytes(audio_bytes: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 class EdgeTTSEngine:
-    """Microsoft EdgeTTS – free, requires internet."""
+    """Microsoft EdgeTTS – free, requires internet.
 
-    def __init__(self, voice: str = "en-US-GuyNeural"):
+    synth() yields (float32 mono array, sample_rate) — playback is owned by
+    the caller (AudioOutput), so sentence N+1 can synthesise while N plays.
+    """
+
+    def __init__(self, voice: str = "pt-BR-AntonioNeural"):
         self.voice = voice
+        self._loop: asyncio.AbstractEventLoop | None = None
 
-    def speak(self, text: str) -> None:
-        loop = asyncio.new_event_loop()
-        try:
-            audio_bytes = loop.run_until_complete(self._synth(text))
-        finally:
-            loop.close()
-        if audio_bytes:
-            _play_audio_bytes(audio_bytes)
+    def _get_loop(self) -> asyncio.AbstractEventLoop:
+        # Reuse one event loop per engine (a fresh loop per sentence added
+        # avoidable setup cost on every utterance).
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+        return self._loop
+
+    def synth(self, text: str, stop_evt: threading.Event | None = None):
+        audio_bytes = self._get_loop().run_until_complete(self._synth(text))
+        if stop_evt is not None and stop_evt.is_set():
+            return
+        if not audio_bytes:
+            return
+        import miniaudio
+        decoded = miniaudio.decode(
+            audio_bytes,
+            output_format=miniaudio.SampleFormat.FLOAT32,
+            nchannels=1,
+        )
+        yield np.array(decoded.samples, dtype=np.float32), decoded.sample_rate
 
     async def _synth(self, text: str) -> bytes:
         import edge_tts
@@ -321,47 +393,23 @@ class KokoroTTSEngine:
         except Exception as e:
             log.warning("Kokoro warmup warning: %s", e)
 
-    def speak(self, text: str) -> None:
+    def synth(self, text: str, stop_evt: threading.Event | None = None):
+        """Yield (float32 chunk, 24000) as Kokoro generates them.
+
+        Playback pipelining lives in the caller (main.py's synth/play worker
+        pair) — chunk N+1 synthesises while chunk N plays.
+        """
         with self._lock:
             if self._pipeline is None:
                 self._init()
 
-        # ── Concurrent synthesise + playback ────────────────────────────────
-        # Kokoro generates audio chunks lazily.  Without threading, we:
-        #   synthesise chunk N → play N → synthesise N+1 → play N+1 …
-        # With a producer/consumer pair, chunk N+1 synthesises WHILE chunk N
-        # plays, cutting perceived latency by the playback duration of all but
-        # the last chunk (typically 1-3 s on multi-sentence responses).
-        audio_q: _queue.Queue[np.ndarray | None] = _queue.Queue(maxsize=4)
-        synth_error: list[Exception] = []
-
-        def _synth():
-            try:
-                for _, _, audio in self._pipeline(text, voice=self.voice, speed=self.speed):
-                    if audio is not None:
-                        arr = _to_numpy(audio)
-                        arr = _compress_silence(arr)
-                        if arr.size > 0:
-                            audio_q.put(arr)          # blocks if player is slow (backpressure)
-            except Exception as exc:
-                synth_error.append(exc)
-            finally:
-                audio_q.put(None)                     # sentinel → player exits
-
-        synth_thread = threading.Thread(target=_synth, daemon=True)
-        synth_thread.start()
-
-        # Player runs in this thread so sd.wait() doesn't block the synth thread.
-        while True:
-            arr = audio_q.get()
-            if arr is None:
+        for _, _, audio in self._pipeline(text, voice=self.voice, speed=self.speed):
+            if stop_evt is not None and stop_evt.is_set():
                 break
-            _play_np(arr, 24000)
-
-        synth_thread.join()
-
-        if synth_error:
-            raise synth_error[0]
+            if audio is not None:
+                arr = _compress_silence(_to_numpy(audio))
+                if arr.size > 0:
+                    yield arr, 24_000
 
     def synthesize(self, text: str) -> tuple[bytes, str]:
         with self._lock:
@@ -406,7 +454,8 @@ class ElevenLabsTTSEngine:
         self.similarity_boost = similarity_boost
         self.speed = speed
 
-    def speak(self, text: str) -> None:
+    def synth(self, text: str, stop_evt: threading.Event | None = None):
+        """Yield (float32 chunk, 24000) as PCM arrives from the API."""
         import requests
         headers = {
             "xi-api-key":   self.api_key,
@@ -435,7 +484,21 @@ class ElevenLabsTTSEngine:
             stream=True,
         )
         resp.raise_for_status()
-        _play_pcm_stream(resp, sample_rate=24_000)
+        leftover = b""
+        for chunk in resp.iter_content(chunk_size=8192):
+            if stop_evt is not None and stop_evt.is_set():
+                resp.close()
+                return
+            if not chunk:
+                continue
+            data = leftover + chunk
+            trim = len(data) - (len(data) % 2)   # int16 needs even byte count
+            if trim <= 0:
+                leftover = data
+                continue
+            pcm = np.frombuffer(data[:trim], dtype=np.int16).astype(np.float32) / 32768.0
+            leftover = data[trim:]
+            yield pcm, 24_000
 
     def synthesize(self, text: str) -> tuple[bytes, str]:
         import requests
@@ -478,18 +541,33 @@ class ElevenLabsTTSEngine:
 
 class TTSPlayer:
     """
-    Wraps any *Engine. Exposes a blocking speak() method
-    meant to be called from a dedicated background thread.
+    Wraps any *Engine (which only synthesises). Playback goes through the
+    shared persistent AudioOutput.
+
+    synth(text) — chunk generator for pipelined playback (main.py's
+                  synth-worker / play-worker pair).
+    speak(text) — blocking synth+play convenience (used by the fallback
+                  path and scripts); same audio sink.
     """
 
     def __init__(self, engine):
-        self._engine  = engine
-        self._playing = False
-        self._lock    = threading.Lock()
+        self._engine   = engine
+        self._playing  = False
+        self._lock     = threading.Lock()
+        self._stop_evt = threading.Event()
 
     @property
     def is_playing(self) -> bool:
         return self._playing
+
+    def synth(self, text: str):
+        """Yield (float32 chunk, sample_rate). Aborts when stop() is called."""
+        self._stop_evt.clear()
+        yield from self._engine.synth(text, stop_evt=self._stop_evt)
+
+    @property
+    def stop_event(self) -> threading.Event:
+        return self._stop_evt
 
     def speak(
         self,
@@ -497,15 +575,25 @@ class TTSPlayer:
         on_start: Callable | None = None,
         on_done:  Callable | None = None,
     ) -> None:
-        """Synthesise and play text. BLOCKING – call from a dedicated thread."""
+        """Synthesise and play text. BLOCKING – call from a dedicated thread.
+
+        Raises on engine failure so the caller can log to the UI and try a
+        fallback engine — a swallowed error here means silent dead air.
+        """
         try:
+            self._stop_evt.clear()
             with self._lock:
                 self._playing = True
             if on_start:
                 on_start()
-            self._engine.speak(text)
+            out = get_audio_output()
+            for samples, rate in self._engine.synth(text, stop_evt=self._stop_evt):
+                if self._stop_evt.is_set():
+                    break
+                out.play(samples, rate, stop_evt=self._stop_evt)
         except Exception as e:
             log.error("TTS Error: %s", e)
+            raise
         finally:
             with self._lock:
                 self._playing = False
@@ -513,7 +601,9 @@ class TTSPlayer:
                 on_done()
 
     def stop(self) -> None:
-        sd.stop()
+        """Interrupt synthesis + playback. Safe to call from any thread."""
+        self._stop_evt.set()            # synth generators poll this per chunk
+        get_audio_output().interrupt()  # discard buffered audio immediately
         with self._lock:
             self._playing = False
 
@@ -550,6 +640,6 @@ def create_tts_player(config: dict) -> TTSPlayer:
             speed=speed,
         )
     else:   # edgetts (default)
-        voice  = config.get("tts_voice", "en-US-GuyNeural")
+        voice  = config.get("tts_voice", "pt-BR-AntonioNeural")
         engine = EdgeTTSEngine(voice=voice)
     return TTSPlayer(engine)

@@ -505,6 +505,12 @@ def dev_agent(
     if not description:
         return "Please describe the project you want me to build, sir."
 
+    # Security gate — dev_agent generates AND executes whole projects, so it
+    # MUST honour allow_code_execution (core/security.py names it a call site).
+    from core.security import code_execution_allowed, CODE_EXEC_DISABLED_MSG
+    if not code_execution_allowed():
+        return CODE_EXEC_DISABLED_MSG
+
     return _build_project(
         description  = description,
         language     = language,
