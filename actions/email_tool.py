@@ -159,6 +159,37 @@ def _read_email(params: dict) -> str:
         return f"Falha ao ler e-mails: {e}"
 
 
+def unread_summary(limit: int = 3) -> tuple[int, list[tuple[str, str]]]:
+    """Structured unread overview for the proactive engine.
+
+    Returns (total_unread, [(sender, subject), ...] newest first).
+    (0, []) when unconfigured or on any error — the engine must never crash
+    or nag because IMAP hiccuped.
+    """
+    import email as _email
+    cfg = _load_config()
+    try:
+        mail = _connect_imap({}, cfg)
+        if mail is None:
+            return 0, []
+        mail.select("INBOX", readonly=True)
+        _, data = mail.search(None, "UNSEEN")
+        msg_ids = data[0].split()
+        top: list[tuple[str, str]] = []
+        for mid in reversed(msg_ids[-limit:]):
+            _, msg_data = mail.fetch(mid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
+            msg = _email.message_from_bytes(msg_data[0][1])
+            top.append((
+                _friendly_sender(msg.get("From", "")),
+                _decode_hdr(msg.get("Subject")) or "sem assunto",
+            ))
+        mail.logout()
+        return len(msg_ids), top
+    except Exception as e:
+        log.warning("unread_summary failed: %s", e)
+        return 0, []
+
+
 def _search_email(params: dict) -> str:
     """IMAP search by sender / subject / recency — result is voice-friendly."""
     cfg        = _load_config()

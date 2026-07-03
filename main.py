@@ -1843,6 +1843,20 @@ class JarvisLocal:
             _cu, _cm, _cp = get_chat_llm_config()
             self.ui.write_log(f"SYS: Chat fast-path → {_cp} / {_cm}")
             self._start_remote_dashboard()
+
+            # Proactive engine — spontaneous speech from scheduled checks
+            # (morning briefing, unread email, event reminders).  The thread
+            # always starts; each tick re-reads proactive_enabled from config,
+            # so the toggle hot-applies without restart.
+            try:
+                from core.proactive import ProactiveEngine
+                self._proactive = ProactiveEngine(self)
+                self._proactive.start()
+                if self._config.get("proactive_enabled", False):
+                    self.ui.write_log("SYS: 🔔 Motor de proatividade ativo.")
+            except Exception as e:
+                self.ui.write_log(f"WARN: Proatividade — {e}")
+
             self.ui.write_log("SYS: JARVIS online.")
             self.ui.set_state("LISTENING")
             self.ui.set_startup_status("● JARVIS online · Voice loading in background…")

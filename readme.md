@@ -115,6 +115,11 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 | `tts_voice` | Voice name / ID depending on engine | `pt-BR-AntonioNeural` |
 | `voice_barge_in` | `true` / `false` — interrupt speech by saying the wake word while Jarvis is talking (best with headphones or a mic with echo cancellation) | `false` |
 | `tts_fallback_voice` | EdgeTTS voice used when the primary TTS engine fails mid-response | `pt-BR-AntonioNeural` |
+| `proactive_enabled` | `true` / `false` — spontaneous speech engine (morning briefing, unread email, event reminders) | `false` |
+| `proactive_quiet_hours` | `HH:MM-HH:MM` — no proactive speech in this window (supports crossing midnight) | `22:30-07:30` |
+| `proactive_morning_briefing` | `HH:MM` — daily spoken briefing: today's agenda + unread mail | `08:30` |
+| `proactive_email_checks` | List of `HH:MM` — speaks ONLY if there are unread emails | `["12:00", "15:30", "18:00"]` |
+| `proactive_event_reminders_min` | Minutes before each agenda event to remind | `[60, 15]` |
 
 ---
 

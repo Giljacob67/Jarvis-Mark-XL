@@ -1,10 +1,116 @@
-"""Calendar tool — local calendar events (macOS/Windows/Linux), no OAuth required."""
+"""Calendar tool — local calendar events (macOS/Windows/Linux), no OAuth required.
+
+On Linux without khal (and as a universal fallback), events live in a local
+JSON agenda (memory/agenda.json).  The proactive engine reads the same file
+for morning briefings and event reminders.  When Google Calendar integration
+lands, it becomes another provider behind the same interface.
+"""
+import json
 import platform
+import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 _OS = platform.system()
+
+_AGENDA_PATH = Path(__file__).resolve().parent.parent / "memory" / "agenda.json"
+
+
+# ---------------------------------------------------------------------------
+# Local JSON agenda (fallback provider — also feeds the proactive engine)
+# ---------------------------------------------------------------------------
+
+def _load_agenda() -> list[dict]:
+    try:
+        data = json.loads(_AGENDA_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_agenda(events: list[dict]) -> None:
+    _AGENDA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _AGENDA_PATH.write_text(
+        json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def parse_datetime_br(text: str) -> datetime | None:
+    """Parse pt-BR-friendly datetime strings the LLM is likely to pass.
+
+    Accepts: 'YYYY-MM-DD HH:MM', 'DD/MM/YYYY HH:MM', 'DD/MM HH:MM',
+    'hoje HH:MM', 'amanhã HH:MM' (and 'amanha').  Returns None if unparsable.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    now = datetime.now()
+
+    m = re.match(r"^(hoje|amanh[aã])\s+(\d{1,2})[:h](\d{2})?$", t)
+    if m:
+        base = now if m.group(1) == "hoje" else now + timedelta(days=1)
+        return base.replace(hour=int(m.group(2)), minute=int(m.group(3) or 0),
+                            second=0, microsecond=0)
+
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%d/%m/%Y %H:%M", "%d/%m %H:%M"):
+        try:
+            dt = datetime.strptime(t, fmt)
+            if fmt == "%d/%m %H:%M":                     # no year → next occurrence
+                dt = dt.replace(year=now.year)
+                if dt < now - timedelta(days=1):
+                    dt = dt.replace(year=now.year + 1)
+            return dt
+        except ValueError:
+            continue
+    return None
+
+
+def agenda_upcoming(hours: int = 48) -> list[dict]:
+    """Structured upcoming events for the proactive engine:
+    [{'title', 'start' (datetime)}...] sorted by start."""
+    now = datetime.now()
+    horizon = now + timedelta(hours=hours)
+    out = []
+    for ev in _load_agenda():
+        dt = parse_datetime_br(ev.get("start", ""))
+        if dt and now - timedelta(minutes=5) <= dt <= horizon:
+            out.append({"title": ev.get("title", "Evento"), "start": dt})
+    return sorted(out, key=lambda e: e["start"])
+
+
+def _agenda_list(days: int) -> str:
+    now     = datetime.now()
+    horizon = now + timedelta(days=days)
+    events = []
+    for ev in _load_agenda():
+        dt = parse_datetime_br(ev.get("start", ""))
+        if dt and dt >= now - timedelta(hours=1) and dt <= horizon:
+            events.append((dt, ev.get("title", "Evento")))
+    if not events:
+        return "Nenhum compromisso agendado."
+    events.sort()
+    lines = []
+    for dt, title in events[:10]:
+        day = "hoje" if dt.date() == now.date() else (
+            "amanhã" if dt.date() == (now + timedelta(days=1)).date()
+            else dt.strftime("%d/%m")
+        )
+        lines.append(f"{title}, {day} às {dt.strftime('%H:%M')}")
+    plural = "compromissos" if len(events) > 1 else "compromisso"
+    return f"{len(events)} {plural}: " + "; ".join(lines) + "."
+
+
+def _agenda_create(title: str, start: str) -> str:
+    dt = parse_datetime_br(start)
+    if dt is None:
+        return ("Não entendi a data. Use por exemplo 'amanhã 10:00', "
+                "'05/07 14:30' ou '2026-07-10 09:00'.")
+    events = _load_agenda()
+    events.append({"title": title, "start": dt.strftime("%Y-%m-%d %H:%M")})
+    _save_agenda(events)
+    return f"Agendado: {title}, {dt.strftime('%d/%m às %H:%M')}."
 
 
 def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
@@ -60,7 +166,8 @@ def _list_events(params: dict) -> str:
         if subprocess.run(["which", "khal"], capture_output=True).returncode == 0:
             code, out = _run(["khal", "list", "today", f"{days}d"])
             return out or "No events, sir."
-        return "No calendar tool found. Install 'khal' (pip install khal) or 'icalBuddy'."
+        # No khal → local JSON agenda (also read by the proactive engine)
+        return _agenda_list(days)
 
 
 def _create_event(params: dict) -> str:
@@ -96,9 +203,10 @@ def _create_event(params: dict) -> str:
             cmd.append(title)
             code, out = _run(cmd)
             return f"Event '{title}' created, sir." if code == 0 else f"Failed: {out}"
-        return "Install 'khal' for calendar support on Linux."
+        # No khal → local JSON agenda
+        return _agenda_create(title, start)
 
-    return "Calendar creation not supported on Windows without Outlook COM."
+    return _agenda_create(title, start)   # Windows without Outlook → local agenda
 
 
 def calendar_tool(
