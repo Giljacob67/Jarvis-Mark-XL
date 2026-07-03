@@ -168,6 +168,20 @@ def _load_config() -> dict:
         return {}
 
 
+_USER_PROFILE_PATH = BASE_DIR / "memory" / "user_profile.md"
+
+
+def _load_user_profile() -> str:
+    """Optional rich user profile (memory/user_profile.md, gitignored —
+    contains personal data). Injected into the system prompt every turn,
+    including the fast chat path, so the assistant always knows the user."""
+    try:
+        text = _USER_PROFILE_PATH.read_text(encoding="utf-8").strip()
+        return f"[USER PROFILE]\n{text}" if text else ""
+    except Exception:
+        return ""
+
+
 def _load_system_prompt() -> str:
     try:
         return PROMPT_PATH.read_text(encoding="utf-8")
@@ -639,12 +653,17 @@ class JarvisLocal:
         now = datetime.now()
         time_ctx = f"[NOW] {now.strftime('%A, %d %b %Y %H:%M')}"
 
+        profile = _load_user_profile()
+
         if chat_mode:
             memory  = load_memory()
             mem_str = format_memory_for_prompt(memory)
-            parts = [_CHAT_SYSTEM_PROMPT, time_ctx]
+            parts = [_CHAT_SYSTEM_PROMPT]
+            if profile:
+                parts.append(profile)
             if mem_str:
-                parts.insert(1, mem_str)
+                parts.append(mem_str)
+            parts.append(time_ctx)
             return "\n\n".join(parts)
 
         # ── ORDER MATTERS for Ollama KV prefix caching (local Ollama only) ─
@@ -652,6 +671,8 @@ class JarvisLocal:
         memory  = load_memory()
         mem_str = format_memory_for_prompt(memory)
         parts = [sys_p]
+        if profile:
+            parts.append(profile)
         if mem_str:
             parts.append(mem_str)
         parts.append(time_ctx)

@@ -39,3 +39,6 @@ memory/clipboard_history.json
 
 # Certificados TLS do dashboard remoto (chave privada — NUNCA commitar)
 config/certs/
+
+# Perfil pessoal do usuário (dados sensíveis — nunca commitar)
+memory/user_profile.md
