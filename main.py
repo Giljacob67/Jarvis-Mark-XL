@@ -359,8 +359,9 @@ class JarvisLocal:
         self._dashboard_cmd_sync: queue.Queue = queue.Queue()
         self._phone_pcm_sync:    queue.Queue = queue.Queue()
         self._phone_active        = False
-        self._speak_target        = "pc"   # "pc" | "phone"
+        self._speak_target        = "pc"   # "pc" | "phone" | "telegram"
         self._phone_tts_queue:   queue.Queue = queue.Queue()
+        self._telegram            = None   # TelegramBot (se token configurado)
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -844,6 +845,10 @@ class JarvisLocal:
             return
         if self._speak_target == "phone":
             self._phone_tts_queue.put(text)
+            return
+        if self._speak_target == "telegram":
+            if self._telegram:
+                self._telegram.capture_speech(text)
             return
         with self._speaking_lock:
             self._speaking = True
@@ -1856,6 +1861,16 @@ class JarvisLocal:
                     self.ui.write_log("SYS: 🔔 Motor de proatividade ativo.")
             except Exception as e:
                 self.ui.write_log(f"WARN: Proatividade — {e}")
+
+            # Bot Telegram — canal remoto de qualquer lugar (texto + voz)
+            if self._config.get("telegram_bot_token", "").strip():
+                try:
+                    from core.telegram_bot import TelegramBot
+                    self._telegram = TelegramBot(self)
+                    self._telegram.start()
+                    self.ui.write_log("SYS: 📱 Bot Telegram ativo.")
+                except Exception as e:
+                    self.ui.write_log(f"WARN: Telegram — {e}")
 
             self.ui.write_log("SYS: JARVIS online.")
             self.ui.set_state("LISTENING")
