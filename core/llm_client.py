@@ -81,13 +81,29 @@ _CLOUD_MODEL_ALIASES: dict[str, str] = {
     "gpt-oss-20b":          "gpt-oss:20b-cloud",
 }
 
+# Ollama-Cloud-style names pasted into a Groq config (invalid there) —
+# the same models exist on Groq under the openai/ prefix.
+_GROQ_MODEL_ALIASES: dict[str, str] = {
+    "gpt-oss:120b-cloud": "openai/gpt-oss-120b",
+    "gpt-oss:20b-cloud":  "openai/gpt-oss-20b",
+    "gpt-oss:120b":       "openai/gpt-oss-120b",
+    "gpt-oss:20b":        "openai/gpt-oss-20b",
+    "gpt-oss-120b":       "openai/gpt-oss-120b",
+    "gpt-oss-20b":        "openai/gpt-oss-20b",
+}
+
 
 def normalize_model_name(model: str, provider: str | None = None) -> str:
-    """Fix common model-name mistakes (esp. openai/ prefix on Ollama Cloud)."""
+    """Fix common model-name mistakes (cross-provider names in the config)."""
     m = (model or "").strip()
     if not m:
         return m
     provider = provider or get_llm_provider()
+    if provider == "groq":
+        fixed = _GROQ_MODEL_ALIASES.get(m, m)
+        if fixed != m:
+            log.warning("Model '%s' is an Ollama Cloud name — using '%s' on Groq", m, fixed)
+        return fixed
     if provider != "ollama_cloud":
         return m
     if m in _CLOUD_MODEL_ALIASES:
