@@ -149,6 +149,15 @@ class EdgeTTSEngine:
                 buf.extend(chunk["data"])
         return bytes(buf)
 
+    def synthesize(self, text: str) -> tuple[bytes, str]:
+        """Return (audio_bytes, format) for remote playback."""
+        loop = asyncio.new_event_loop()
+        try:
+            audio_bytes = loop.run_until_complete(self._synth(text))
+        finally:
+            loop.close()
+        return (audio_bytes, "mp3") if audio_bytes else (b"", "mp3")
+
 
 # ---------------------------------------------------------------------------
 # Kokoro import helper — auto-upgrades on version-mismatch errors
@@ -354,6 +363,22 @@ class KokoroTTSEngine:
         if synth_error:
             raise synth_error[0]
 
+    def synthesize(self, text: str) -> tuple[bytes, str]:
+        with self._lock:
+            if self._pipeline is None:
+                self._init()
+        chunks: list[np.ndarray] = []
+        for _, _, audio in self._pipeline(text, voice=self.voice, speed=self.speed):
+            if audio is not None:
+                arr = _compress_silence(_to_numpy(audio))
+                if arr.size > 0:
+                    chunks.append(arr)
+        if not chunks:
+            return b"", "pcm_24000"
+        merged = np.concatenate(chunks)
+        pcm = (merged * 32767).astype(np.int16)
+        return pcm.tobytes(), "pcm_24000"
+
 
 class ElevenLabsTTSEngine:
     """ElevenLabs cloud TTS – API key required.
@@ -412,6 +437,40 @@ class ElevenLabsTTSEngine:
         resp.raise_for_status()
         _play_pcm_stream(resp, sample_rate=24_000)
 
+    def synthesize(self, text: str) -> tuple[bytes, str]:
+        import requests
+        headers = {
+            "xi-api-key":   self.api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "text":     text,
+            "model_id": self.model_id,
+            "voice_settings": {
+                "stability":        self.stability,
+                "similarity_boost": self.similarity_boost,
+                "speed":            self.speed,
+            },
+        }
+        params = {
+            "output_format":              "pcm_24000",
+            "optimize_streaming_latency": "4",
+        }
+        resp = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/stream",
+            params=params,
+            json=payload,
+            headers=headers,
+            timeout=60,
+            stream=True,
+        )
+        resp.raise_for_status()
+        buf = b""
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                buf += chunk
+        return buf, "pcm_24000"
+
 
 # ---------------------------------------------------------------------------
 # Thread-safe player wrapper
@@ -457,6 +516,12 @@ class TTSPlayer:
         sd.stop()
         with self._lock:
             self._playing = False
+
+    def synthesize(self, text: str) -> tuple[bytes, str]:
+        """Synthesise without playing — for remote phone playback."""
+        if hasattr(self._engine, "synthesize"):
+            return self._engine.synthesize(text)
+        return b"", "pcm_24000"
 
 
 # ---------------------------------------------------------------------------

@@ -36,3 +36,6 @@ memory/*.json
 memory/*.db
 memory/*.db-journal
 memory/clipboard_history.json
+
+# Certificados TLS do dashboard remoto (chave privada — NUNCA commitar)
+config/certs/

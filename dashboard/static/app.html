@@ -210,7 +210,11 @@
     const _wsUrl   = `${_wsProto}://${location.host}/ws?token=${encodeURIComponent(_authToken)}`;
     const ws       = new WebSocket(_wsUrl);
 
-    ws.onopen    = () => { sys('Remote session active.'); toast('Connected to JARVIS'); };
+    ws.onopen    = () => {
+      sys('Remote session active.');
+      toast('Connected to JARVIS');
+      if (location.protocol !== 'https:') _showVoiceSetup('http');
+    };
     ws.onclose   = () => sys('Connection lost — refresh to reconnect.');
     ws.onerror   = () => sys('Connection error.');
     ws.onmessage = (e) => {
@@ -220,6 +224,7 @@
       if (m.type === 'wake')          sys('Wake word detected — connecting…');
       if (m.type === 'sys')           sys(m.text);
       if (m.type === 'file_received') _onFileReceived(m);
+      if (m.type === 'audio')         _playRemoteAudio(m.data, m.format);
     };
 
     function setStatus(s) {
@@ -434,9 +439,12 @@
       return out.buffer;
     }
 
-    function _showVoiceSetup() {
-      if (document.getElementById('voice-setup')) return; // show once
-      const origin = location.origin;
+    function _showVoiceSetup(reason) {
+      if (document.getElementById('voice-setup')) return;
+      const httpsPort = '__HTTPS_PORT__';
+      const httpsUrl = location.protocol === 'https:'
+        ? location.href
+        : `https://${location.hostname}:${httpsPort}${location.pathname}${location.search}`;
       const card = document.createElement('div');
       card.id = 'voice-setup';
       card.style.cssText = [
@@ -445,28 +453,79 @@
         'padding:16px 18px', 'font-size:13px', 'line-height:1.8',
         'animation:pop 0.18s ease'
       ].join(';');
+      const title = reason === 'http'
+        ? '🎤 Microfone requer HTTPS'
+        : '🎤 Configuração de voz (uma vez)';
       card.innerHTML =
-        '<div style="font-weight:700;color:#818cf8;letter-spacing:.5px;margin-bottom:10px">🎤 One-time voice setup</div>' +
-        '<ol style="padding-left:18px;color:#8899aa;margin:0;display:flex;flex-direction:column;gap:4px">' +
-        '<li>Open a new tab → go to <span style="background:rgba(255,255,255,0.07);padding:1px 6px;border-radius:4px;font-family:monospace;font-size:12px">chrome://flags</span></li>' +
-        '<li>Search: <strong style="color:#dde3ed">Insecure origins treated as secure</strong></li>' +
-        '<li>Paste this URL into the box:<br><span id="flags-url" style="background:rgba(255,255,255,0.07);padding:2px 8px;border-radius:4px;font-family:monospace;font-size:11px;user-select:all;cursor:pointer">' + esc(origin) + '</span></li>' +
-        '<li>Set to <strong style="color:#22c55e">Enabled</strong> → tap <strong style="color:#dde3ed">Relaunch</strong></li>' +
-        '<li>Return here and tap 🎤</li>' +
-        '</ol>';
+        '<div style="font-weight:700;color:#818cf8;letter-spacing:.5px;margin-bottom:10px">' + title + '</div>' +
+        '<ol style="padding-left:18px;color:#8899aa;margin:0;display:flex;flex-direction:column;gap:6px">' +
+        '<li>Abra esta URL em <strong style="color:#dde3ed">HTTPS</strong> (não HTTP):<br>' +
+        '<span id="flags-url" style="background:rgba(255,255,255,0.07);padding:2px 8px;border-radius:4px;font-family:monospace;font-size:11px;user-select:all;cursor:pointer">' + esc(httpsUrl) + '</span></li>' +
+        '<li>O Chrome vai avisar que o certificado não é confiável — toque em <strong style="color:#dde3ed">Avançado → Continuar</strong> (só na primeira vez)</li>' +
+        '<li>Toque no cadeado da barra de endereço → <strong style="color:#dde3ed">Microfone → Permitir</strong></li>' +
+        '<li>Volte aqui e toque 🎤</li>' +
+        '</ol>' +
+        '<p style="margin-top:10px;font-size:11px;color:#5e6a7e">A flag <code style="background:rgba(255,255,255,0.07);padding:1px 4px;border-radius:3px">chrome://flags</code> foi removida do Chrome Android — HTTPS é o caminho correto.</p>';
       feed.appendChild(card);
       feed.scrollTop = feed.scrollHeight;
-      // tap to copy
       card.querySelector('#flags-url').addEventListener('click', () => {
-        navigator.clipboard?.writeText(origin).then(() => toast('URL copied!')).catch(() => {});
+        navigator.clipboard?.writeText(httpsUrl).then(() => toast('URL copiada!')).catch(() => {});
+      });
+    }
+
+    // ── Remote TTS playback (Jarvis speaks on the phone) ─────────────────────
+    let _playCtx = null;
+    let _audioQ = Promise.resolve();
+
+    function _playRemoteAudio(b64, format) {
+      if (!b64) return;
+      _audioQ = _audioQ.then(() => _playRemoteAudioOnce(b64, format)).catch(() => {});
+    }
+
+    async function _playRemoteAudioOnce(b64, format) {
+      const raw = atob(b64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+      if (format === 'mp3') {
+        const blob = new Blob([bytes], { type: 'audio/mpeg' });
+        const url  = URL.createObjectURL(blob);
+        await new Promise((resolve, reject) => {
+          const a = new Audio(url);
+          a.onended = () => { URL.revokeObjectURL(url); resolve(); };
+          a.onerror = reject;
+          a.play().catch(reject);
+        });
+        return;
+      }
+
+      const rate = format === 'pcm_24000' ? 24000 : 24000;
+      if (!_playCtx) _playCtx = new AudioContext({ sampleRate: rate });
+      if (_playCtx.state === 'suspended') await _playCtx.resume();
+
+      const int16 = new Int16Array(bytes.buffer);
+      const f32   = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+      const buf = _playCtx.createBuffer(1, f32.length, rate);
+      buf.copyToChannel(f32, 0);
+      await new Promise(resolve => {
+        const src = _playCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(_playCtx.destination);
+        src.onended = resolve;
+        src.start();
       });
     }
 
     async function doMic() {
       if (_voiceWs) { _stopVoice(); return; }
 
+      if (!window.isSecureContext || location.protocol !== 'https:') {
+        _showVoiceSetup('http');
+        return;
+      }
       if (!navigator.mediaDevices?.getUserMedia) {
-        _showVoiceSetup();
+        _showVoiceSetup('unsupported');
         return;
       }
       let stream;

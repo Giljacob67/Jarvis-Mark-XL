@@ -38,6 +38,7 @@ except Exception:
 BASE_DIR    = Path(__file__).resolve().parent.parent
 STATIC_DIR  = Path(__file__).parent / "static"
 PORT        = 8000
+HTTPS_PORT  = 8443   # mic needs HTTPS; kept separate so :8000 stays fast HTTP
 MAX_UPLOAD_MB = 500
 
 
@@ -317,6 +318,62 @@ _ensure_crypto_js()
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _ensure_ssl_certs() -> bool:
+    """Create a self-signed TLS cert for the LAN IP (enables phone microphone)."""
+    certs_dir = BASE_DIR / "config" / "certs"
+    key_path  = certs_dir / "jarvis.key"
+    crt_path  = certs_dir / "jarvis.crt"
+    if key_path.exists() and crt_path.exists():
+        return True
+    try:
+        import datetime
+        import ipaddress
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        certs_dir.mkdir(parents=True, exist_ok=True)
+        ip = _local_ip()
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "JARVIS Local")])
+
+        san: list = [
+            x509.DNSName("localhost"),
+            x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+        ]
+        try:
+            san.append(x509.IPAddress(ipaddress.IPv4Address(ip)))
+        except Exception:
+            pass
+
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime.now(datetime.UTC))
+            .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=3650))
+            .add_extension(x509.SubjectAlternativeName(san), critical=False)
+            .sign(key, hashes.SHA256())
+        )
+
+        key_path.write_bytes(key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+        crt_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        print(f"[Dashboard] HTTPS cert created for {ip} (config/certs/)")
+        print("[Dashboard] On your phone: accept the security warning once, then mic works.")
+        return True
+    except Exception as e:
+        print(f"[Dashboard] HTTPS cert generation failed: {e}")
+        return False
+
+
 def _local_ip() -> str:
     """Return the best LAN-facing IPv4 address, no internet required."""
     # Method 1: route trick (fast, works when internet is available)
@@ -389,17 +446,19 @@ class DashboardServer:
 
     @staticmethod
     def _ssl_enabled() -> bool:
+        _ensure_ssl_certs()
         certs = BASE_DIR / "config" / "certs"
         return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
 
     def get_url(self) -> str:
-        proto = "https" if self._ssl_enabled() else "http"
-        return f"{proto}://{self._ip}:{PORT}"
+        if self._ssl_enabled():
+            return f"https://{self._ip}:{HTTPS_PORT}"
+        return f"http://{self._ip}:{PORT}"
 
     def get_manual_url(self) -> str:
-        """URL for manual browser entry. When HTTPS active, points to alias port (also HTTPS)."""
+        """URL for manual browser entry in the remote overlay."""
         if self._ssl_enabled():
-            return f"{self._ip}:{PORT + 1}"
+            return f"{self._ip}:{HTTPS_PORT}"
         return f"{self._ip}:{PORT}"
 
     def _aes_key(self, session_key: str) -> bytes:
@@ -467,7 +526,8 @@ class DashboardServer:
             # don't send custom headers (location.href doesn't carry Authorization).
             html = (self._app_html
                     .replace("__IP__", self._ip)
-                    .replace("__PORT__", str(PORT)))
+                    .replace("__PORT__", str(PORT))
+                    .replace("__HTTPS_PORT__", str(HTTPS_PORT)))
             return HTMLResponse(html)
 
         @app.post("/login")
@@ -744,19 +804,20 @@ class DashboardServer:
 
     # ── serve ─────────────────────────────────────────────────────────────
 
-    async def _serve_alias(self) -> None:
-        """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
-        Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
-        User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
+    async def _serve_https(self) -> None:
+        """HTTPS on HTTPS_PORT — required for phone microphone (secure context)."""
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
-        asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)
+        asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, HTTPS_PORT)
         cfg = uvicorn.Config(
-            self.app, host="0.0.0.0", port=PORT + 1, log_level="warning",
+            self.app, host="0.0.0.0", port=HTTPS_PORT, log_level="warning",
             ssl_keyfile=str(ssl_key), ssl_certfile=str(ssl_cert),
         )
-        print(f"[Dashboard] Manual entry:  {self._ip}:{PORT + 1}  (type in browser, accept cert once)")
-        await uvicorn.Server(cfg).serve()
+        print(f"[Dashboard] HTTPS (mic): https://{self._ip}:{HTTPS_PORT}")
+        try:
+            await uvicorn.Server(cfg).serve()
+        except OSError as e:
+            print(f"[Dashboard] HTTPS port {HTTPS_PORT} unavailable: {e}")
 
     async def serve(self) -> None:
         if not _DEPS_OK:
@@ -773,14 +834,14 @@ class DashboardServer:
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
 
         if use_ssl:
-            asyncio.create_task(self._serve_alias())
+            asyncio.create_task(self._serve_https())
 
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT, log_level="warning",
-            **({"ssl_keyfile": str(ssl_key), "ssl_certfile": str(ssl_cert)} if use_ssl else {}),
         )
 
-        proto = "https" if use_ssl else "http"
-        print(f"[Dashboard] {proto}://{self._ip}:{PORT}")
+        print(f"[Dashboard] HTTP:  http://{self._ip}:{PORT}")
+        if use_ssl:
+            print(f"[Dashboard] QR / mic: https://{self._ip}:{HTTPS_PORT}")
         print("[Dashboard] Press 'Remote Control' in JARVIS UI to get the QR code.")
         await uvicorn.Server(cfg).serve()

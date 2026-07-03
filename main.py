@@ -326,6 +326,8 @@ class JarvisLocal:
         self._dashboard_cmd_sync: queue.Queue = queue.Queue()
         self._phone_pcm_sync:    queue.Queue = queue.Queue()
         self._phone_active        = False
+        self._speak_target        = "pc"   # "pc" | "phone"
+        self._phone_tts_queue:   queue.Queue = queue.Queue()
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -429,8 +431,14 @@ class JarvisLocal:
             threading.Thread(
                 target=self._phone_audio_worker, daemon=True, name="phone-audio"
             ).start()
+            threading.Thread(
+                target=self._phone_tts_worker, daemon=True, name="phone-tts"
+            ).start()
             ip = self._dashboard._ip
-            self.ui.write_log(f"SYS: Remote Dashboard em http://{ip}:8000")
+            url = self._dashboard.get_url()
+            self.ui.write_log(f"SYS: Remote Dashboard — {url}")
+            if self._dashboard._ssl_enabled():
+                self.ui.write_log(f"SYS: HTTP fallback — http://{ip}:8000")
             self.ui.write_log("SYS: Clique ◉ REMOTE CONTROL para gerar QR code.")
         except Exception as e:
             self._dashboard = None
@@ -447,7 +455,11 @@ class JarvisLocal:
                 continue
             self.ui.write_log(f"[Celular]: {text}")
             self._dashboard_broadcast({"type": "log", "speaker": "user", "text": text})
-            self._process_message(text, from_voice=False)
+            self._speak_target = "phone"
+            try:
+                self._process_message(text, from_voice=False)
+            finally:
+                self._speak_target = "pc"
 
     def _phone_audio_worker(self) -> None:
         """Transcribe phone mic PCM bursts (WebSocket from mobile browser)."""
@@ -482,7 +494,11 @@ class JarvisLocal:
                         self._dashboard_broadcast(
                             {"type": "log", "speaker": "user", "text": text}
                         )
-                        self._process_message(text.strip(), from_voice=True)
+                        self._speak_target = "phone"
+                        try:
+                            self._process_message(text.strip(), from_voice=True)
+                        finally:
+                            self._speak_target = "pc"
                 except Exception as e:
                     self.ui.write_log(f"ERR: Phone STT — {e}")
 
@@ -602,6 +618,26 @@ class JarvisLocal:
     # TTS queue worker — plays sentences sequentially, no overlaps
     # ------------------------------------------------------------------
 
+    def _phone_tts_worker(self) -> None:
+        """Synthesise TTS and stream audio to connected phone browsers."""
+        import base64
+        self._tts_ready.wait(timeout=120)
+        while True:
+            text = self._phone_tts_queue.get()
+            try:
+                if text and self._tts:
+                    audio, fmt = self._tts.synthesize(text)
+                    if audio:
+                        self._dashboard_broadcast({
+                            "type":   "audio",
+                            "format": fmt,
+                            "data":   base64.b64encode(audio).decode("ascii"),
+                        })
+            except Exception as e:
+                print(f"[TTS] phone speak error: {e}")
+            finally:
+                self._phone_tts_queue.task_done()
+
     def _tts_worker(self) -> None:
         # Block until TTS engine is loaded.  Queued items are preserved
         # and played immediately once loading completes — nothing is lost.
@@ -638,6 +674,9 @@ class JarvisLocal:
 
     def speak(self, text: str) -> None:
         if not text or not self._tts:
+            return
+        if self._speak_target == "phone":
+            self._phone_tts_queue.put(text)
             return
         with self._speaking_lock:
             self._speaking = True
