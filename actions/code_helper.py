@@ -486,6 +486,13 @@ def code_helper(
         action = _detect_intent(description, file_path, code)
         print(f"[Code] 🤖 Auto-detected: {action}")
 
+    # Security gate — run/build execute code on the machine and MUST honour
+    # allow_code_execution (core/security.py names this module as a call site).
+    if action in ("run", "build"):
+        from core.security import code_execution_allowed, CODE_EXEC_DISABLED_MSG
+        if not code_execution_allowed():
+            return CODE_EXEC_DISABLED_MSG
+
     if action == "write":
         return _write_action(description, language, output_path, player)
 
