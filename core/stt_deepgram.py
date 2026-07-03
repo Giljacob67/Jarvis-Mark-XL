@@ -147,7 +147,56 @@ class DeepgramLiveSTT:
         self._connected = False
         self._closed = False
         self._utterance_start: float | None = None
+        # Segmentos is_final acumulados até o speech_final/UtteranceEnd.
+        # Deepgram fecha "chunks" no meio da fala (is_final=True sem
+        # speech_final) — descartá-los perde o começo de frases longas.
+        self._segments: list[str] = []
         log.info("Deepgram live ready (model=%s, lang=%s)", self._model, self._language)
+
+    # ── montagem de frases (testável isoladamente) ───────────────────────
+    def _flush_segments(self) -> None:
+        """Entrega a frase acumulada (se houver) e zera o estado."""
+        full = " ".join(self._segments).strip()
+        self._segments = []
+        stt_ms = 0.0
+        if self._utterance_start is not None:
+            stt_ms = (time.time() - self._utterance_start) * 1000
+        self._utterance_start = None
+        if full:
+            self._on_final(full, stt_ms)
+
+    def _handle_message(self, raw: str) -> None:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        mtype = data.get("type")
+        if mtype == "UtteranceEnd":
+            # Gap de fala detectado por timing de palavras — entrega o que
+            # está pendente mesmo que nenhum speech_final tenha vindo
+            # (acontece com ruído de fundo mantendo o canal "ativo").
+            self._flush_segments()
+            return
+        if mtype != "Results":
+            return
+        alt  = data.get("channel", {}).get("alternatives", [{}])[0]
+        text = (alt.get("transcript") or "").strip()
+        if not data.get("is_final"):
+            if text:
+                if self._utterance_start is None:
+                    self._utterance_start = time.time()
+                if self._on_interim:
+                    # mostra a frase inteira em andamento, não só o chunk atual
+                    self._on_interim(" ".join([*self._segments, text]).strip())
+            return
+        # is_final: fecha um SEGMENTO (não necessariamente a fala inteira)
+        if text:
+            self._segments.append(text)
+        # speech_final/from_finalize: a fala terminou — entrega tudo.
+        # (speech_final pode vir com transcript vazio; por isso o flush
+        # NÃO pode ficar atrás do 'if text'.)
+        if data.get("speech_final") or data.get("from_finalize"):
+            self._flush_segments()
 
     def _build_url(self) -> str:
         # utterance_end_ms must be >= 1000 (Deepgram returns 400 otherwise).
@@ -183,28 +232,7 @@ class DeepgramLiveSTT:
             log.debug("Deepgram live socket open")
 
         def _on_message(ws, raw: str) -> None:
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                return
-            if data.get("type") != "Results":
-                return
-            alt = data.get("channel", {}).get("alternatives", [{}])[0]
-            text = (alt.get("transcript") or "").strip()
-            if not text:
-                return
-            if not data.get("is_final"):
-                if self._utterance_start is None:
-                    self._utterance_start = time.time()
-                if self._on_interim:
-                    self._on_interim(text)
-                return
-            if data.get("speech_final"):
-                stt_ms = 0.0
-                if self._utterance_start is not None:
-                    stt_ms = (time.time() - self._utterance_start) * 1000
-                self._utterance_start = None
-                self._on_final(text, stt_ms)
+            self._handle_message(raw)
 
         def _on_error(ws, err) -> None:
             self._connect_err = str(err)
@@ -266,8 +294,9 @@ class DeepgramLiveSTT:
         self._utterance_start = None
 
     def reset_utterance(self) -> None:
-        """Drop client-side utterance timing when the mic gate re-opens."""
+        """Drop client-side utterance state when the mic gate re-opens."""
         self._utterance_start = None
+        self._segments = []
 
     def feed_float(self, audio: np.ndarray) -> None:
         """Convert float32 [-1,1] mono chunk to int16 and send."""
