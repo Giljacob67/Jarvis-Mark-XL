@@ -79,7 +79,14 @@ def test_parse_garbage_returns_none():
 
 # ── local agenda create/list (isolated file) ─────────────────────────────
 
+def _isolate_google(monkeypatch):
+    """Nunca tocar o Google Calendar real do dev nos testes de agenda local."""
+    import core.google_auth as ga
+    monkeypatch.setattr(ga, "google_ready", lambda: False)
+
+
 def test_agenda_create_and_upcoming(tmp_path, monkeypatch):
+    _isolate_google(monkeypatch)
     monkeypatch.setattr(ct, "_AGENDA_PATH", tmp_path / "agenda.json")
     from datetime import timedelta
     start = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
@@ -93,6 +100,7 @@ def test_agenda_create_and_upcoming(tmp_path, monkeypatch):
 
 
 def test_agenda_past_events_excluded(tmp_path, monkeypatch):
+    _isolate_google(monkeypatch)
     monkeypatch.setattr(ct, "_AGENDA_PATH", tmp_path / "agenda.json")
     ct._save_agenda([{"title": "Antigo", "start": "2020-01-01 10:00"}])
     assert ct.agenda_upcoming(hours=48) == []

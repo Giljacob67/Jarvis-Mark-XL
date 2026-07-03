@@ -246,6 +246,29 @@ class DeepgramLiveSTT:
         except Exception as e:
             log.debug("Deepgram feed skipped: %s", e)
 
+    def finalize(self) -> None:
+        """Flush Deepgram's buffered audio — call whenever the mic gate CLOSES
+        (TTS speaking, mute, cooldown).
+
+        Deepgram only finalizes when it hears silence IN THE AUDIO IT RECEIVES.
+        If we just stop sending packets mid-utterance, that utterance never
+        finalizes; when feeding resumes, its stale words get stitched into the
+        NEXT utterance — finals arrive late (10s+), out of order and garbled.
+        The flushed final lands while the gate is still closed, so the echo
+        guard in _handle_voice_transcript discards it.
+        """
+        if self._closed or not self._ws or not self._ws.sock:
+            return
+        try:
+            self._ws.send(json.dumps({"type": "Finalize"}))
+        except Exception as e:
+            log.debug("Deepgram finalize skipped: %s", e)
+        self._utterance_start = None
+
+    def reset_utterance(self) -> None:
+        """Drop client-side utterance timing when the mic gate re-opens."""
+        self._utterance_start = None
+
     def feed_float(self, audio: np.ndarray) -> None:
         """Convert float32 [-1,1] mono chunk to int16 and send."""
         pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16).tobytes()

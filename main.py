@@ -234,6 +234,13 @@ class _VADBuffer:
         self._in_spch        = False
         self._sil_cnt        = 0
 
+    def reset(self) -> None:
+        """Discard the partial utterance — call when the mic gate closes,
+        otherwise pre-gate words get stitched onto the next utterance."""
+        self._buf.clear()
+        self._in_spch = False
+        self._sil_cnt = 0
+
     def _spectral_centroid(self, chunk: np.ndarray) -> float:
         """Compute spectral centroid — higher values indicate voice vs noise."""
         fft = np.abs(np.fft.rfft(chunk))
@@ -1580,9 +1587,20 @@ class JarvisLocal:
             self._listen_whisper()
             return
 
+        _was_allowed = [True]
+
         def callback(indata, frames, time_info, status):
-            if self._mic_allowed():
+            allowed = self._mic_allowed()
+            if allowed:
+                if not _was_allowed[0]:
+                    live.reset_utterance()   # gate reabriu — estado limpo
                 live.feed_float(indata.flatten())
+            elif _was_allowed[0]:
+                # Gate fechou (TTS/mudo/cooldown): descarrega o buffer do
+                # Deepgram AGORA — sem isso a frase pendente nunca finaliza
+                # e é costurada na próxima (finais atrasados/embaralhados).
+                live.finalize()
+            _was_allowed[0] = allowed
 
         try:
             with sd.InputStream(
@@ -1616,12 +1634,24 @@ class JarvisLocal:
         q: queue.Queue = queue.Queue(maxsize=200)
         _stt_busy = threading.Event()
 
+        _was_allowed = [True]
+
         def callback(indata, frames, time_info, status):
-            if self._mic_allowed():
+            allowed = self._mic_allowed()
+            if allowed:
                 try:
                     q.put_nowait(indata.copy())
                 except queue.Full:
                     pass
+            elif _was_allowed[0]:
+                # Gate fechou — sentinela para o loop resetar o VAD no thread
+                # dele (descarta a frase parcial; senão ela é costurada na
+                # próxima quando o gate reabrir).
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    pass
+            _was_allowed[0] = allowed
 
         def _run_stt(audio: np.ndarray, t0: float) -> None:
             try:
@@ -1651,6 +1681,9 @@ class JarvisLocal:
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)
+                        if chunk is None:          # gate fechou → zera o VAD
+                            vad.reset()
+                            continue
                         audio = vad.process(chunk.flatten())
                         if audio is not None and not _stt_busy.is_set():
                             _stt_busy.set()
@@ -1670,12 +1703,21 @@ class JarvisLocal:
         """Mic → Vosk streaming → Wake Word Check → LLM loop."""
         q: queue.Queue = queue.Queue(maxsize=200)
 
+        _was_allowed = [True]
+
         def callback(indata, frames, time_info, status):
-            if self._mic_allowed():
+            allowed = self._mic_allowed()
+            if allowed:
                 try:
                     q.put_nowait(indata.copy())
                 except queue.Full:
                     pass
+            elif _was_allowed[0]:
+                try:
+                    q.put_nowait(None)   # gate fechou → loop reseta o Vosk
+                except queue.Full:
+                    pass
+            _was_allowed[0] = allowed
 
         try:
             with sd.InputStream(
@@ -1692,6 +1734,9 @@ class JarvisLocal:
                 while True:
                     try:
                         chunk = q.get(timeout=0.1)
+                        if chunk is None:          # gate fechou → zera o Vosk
+                            self._stt.reset()
+                            continue
                         text, is_final = self._stt.process_chunk(chunk.tobytes())
                         if is_final and text.strip():
                             self._handle_voice_transcript(text)

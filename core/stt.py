@@ -85,3 +85,11 @@ class VoskSTT:
             return result.get("text", ""), True
         partial = json.loads(self._rec.PartialResult())
         return partial.get("partial", ""), False
+
+    def reset(self) -> None:
+        """Drop the partial utterance — call when the mic gate closes, so
+        pre-gate words aren't stitched onto the next utterance."""
+        try:
+            self._rec.Reset()
+        except Exception:
+            pass
