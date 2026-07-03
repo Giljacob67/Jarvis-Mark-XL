@@ -173,7 +173,7 @@ def _load_system_prompt() -> str:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            "You are JARVIS, Tony Stark's AI assistant. "
+            "You are JARVIS, a real local voice assistant (not the Marvel character). "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
@@ -181,7 +181,13 @@ def _load_system_prompt() -> str:
 
 # Minimal prompt for casual chat — no tool rules, ~30 tokens vs ~400+.
 _CHAT_SYSTEM_PROMPT = (
-    "You are JARVIS, a personal AI assistant. "
+    "You are JARVIS, a real local voice assistant running on the user's computer. "
+    "You are NOT the fictional Marvel character — never roleplay Iron Man lore "
+    "(no Tony Stark, Natasha Romanoff, Iron Legion, missions, suits). "
+    "NEVER invent facts about the user's life: appointments, meetings, emails, "
+    "tasks or files. In this chat mode you have NO access to calendar or email — "
+    "if asked about them, say you can check and ask the user to confirm "
+    "(e.g. 'Quer que eu verifique sua agenda?'). "
     "Reply in the user's language. Max 2 short sentences. Be direct and friendly."
 )
 
@@ -294,13 +300,13 @@ class JarvisLocal:
         r"(?i)\b("
         r"abr[ae]|open|launch|lanc|inici|execut|"
         r"pesquis|busca|search|googl|"
-        r"envi|mand|messag|whatsapp|telegram|email|"
-        r"timer|alarm|lembret|remind|"
+        r"envi|mand|messag|whatsapp|telegram|e-?mail|"
+        r"timer|alarm|lembr|remind|"
         r"tempo|weather|clima|"
         r"youtube|spotify|music|"
         r"tela|screen|camera|webcam|"
         r"arquiv|file|past|"
-        r"calend|agend|"
+        r"calend|agend|compromiss|tarefa|reuni|"
         r"instal|download|"
         r"calcul|traduz|nota|clipboard|copi"
         r")\w*"
