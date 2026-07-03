@@ -225,6 +225,27 @@ class DeepgramLiveSTT:
 
         self._ready.clear()
         self._connect_err = None
+        self._last_audio = time.time()
+
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="deepgram-live",
+        )
+        self._thread.start()
+        # KeepAlive: o Deepgram derruba a conexão após ~10s SEM áudio.
+        # Enquanto o gate do mic está fechado (Jarvis falando uma resposta
+        # longa, mudo), mandamos KeepAlive para segurar o socket aberto.
+        self._ka_thread = threading.Thread(
+            target=self._keepalive_loop, daemon=True, name="deepgram-ka",
+        )
+        self._ka_thread.start()
+        if not self._ready.wait(timeout=timeout):
+            detail = self._connect_err or "no response from server"
+            raise RuntimeError(
+                f"Deepgram live WebSocket did not connect: {detail}"
+            )
+
+    def _build_ws(self):
+        import websocket
 
         def _on_open(ws) -> None:
             self._connected = True
@@ -252,17 +273,34 @@ class DeepgramLiveSTT:
             on_error=_on_error,
             on_close=_on_close,
         )
-        self._thread = threading.Thread(
-            target=lambda: self._ws.run_forever(ping_interval=20, ping_timeout=10),
-            daemon=True,
-            name="deepgram-live",
-        )
-        self._thread.start()
-        if not self._ready.wait(timeout=timeout):
-            detail = self._connect_err or "no response from server"
-            raise RuntimeError(
-                f"Deepgram live WebSocket did not connect: {detail}"
-            )
+
+    def _run(self) -> None:
+        """Connection loop with auto-reconnect — a dropped socket used to
+        kill voice recognition for the rest of the session."""
+        backoff = 1
+        while not self._closed:
+            self._build_ws()
+            try:
+                self._ws.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                log.warning("Deepgram run_forever: %s", e)
+            if self._closed:
+                return
+            was_connected = self._connected
+            self._connected = False
+            self.reset_utterance()
+            backoff = 1 if was_connected else min(backoff * 2, 15)
+            log.warning("Deepgram live desconectou — reconectando em %ds", backoff)
+            time.sleep(backoff)
+
+    def _keepalive_loop(self) -> None:
+        while not self._closed:
+            time.sleep(3)
+            try:
+                if self._connected and time.time() - self._last_audio > 3:
+                    self._ws.send(json.dumps({"type": "KeepAlive"}))
+            except Exception:
+                pass   # socket caindo — o _run reconecta
 
     def feed(self, pcm_int16: bytes) -> None:
         """Send raw int16 mono PCM to the live stream."""
@@ -270,6 +308,7 @@ class DeepgramLiveSTT:
             return
         try:
             import websocket
+            self._last_audio = time.time()
             self._ws.send(pcm_int16, opcode=websocket.ABNF.OPCODE_BINARY)
         except Exception as e:
             log.debug("Deepgram feed skipped: %s", e)

@@ -45,6 +45,34 @@ log = get_logger("llm")
 
 _SENT_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)\s*\n')
 
+# Abreviações pt-BR/jurídicas que NÃO terminam frase ("Dr. Gilberto" era
+# quebrado em duas sínteses TTS, com pausa no meio do nome).
+_ABBREV_END = re.compile(
+    r"(?i)\b(dr|dra|sr|sra|srta|prof|profa|exmo|exma|ilmo|ilma|"
+    r"av|art|arts|inc|par|p[áa]g|n[ºo]|num|proc|rel|min|des|"
+    r"tel|cel|obs|ex|cf|fl|fls|ltda|cia|jr)\.$"
+)
+
+
+def _pop_sentence(buf: str) -> tuple[str | None, str]:
+    """Extract the next COMPLETE sentence from the stream buffer.
+
+    Returns (sentence, rest) or (None, buf) when no real boundary exists.
+    Boundaries right after known abbreviations are skipped.
+    """
+    pos = 0
+    while True:
+        m = _SENT_END.search(buf, pos)
+        if not m:
+            return None, buf
+        head = buf[: m.start() + 1].strip()
+        if _ABBREV_END.search(head):
+            pos = m.end()
+            continue
+        # head pode ser "" (boundary no início) — caller pula strings vazias
+        # mas continua consumindo o buffer.
+        return head, buf[m.end():]
+
 _DEFAULTS = {
     "llm_url":             "http://localhost:11434",
     "llm_model":           "llama3.2",
@@ -630,13 +658,11 @@ def _stream_sse(
             if text:
                 yield {"type": "chunk", "text": text}
 
-            # Yield complete sentences
+            # Yield complete sentences (abbreviation-aware)
             while True:
-                m = _SENT_END.search(buf)
-                if not m:
+                sentence, buf = _pop_sentence(buf)
+                if sentence is None:
                     break
-                sentence = buf[: m.start() + 1].strip()
-                buf      = buf[m.end():]
                 if sentence:
                     yield {"type": "sentence", "text": sentence}
 
@@ -814,11 +840,9 @@ def call_llm_stream(
                     yield {"type": "chunk", "text": delta}
 
                 while True:
-                    m = _SENT_END.search(buf)
-                    if not m:
+                    sentence, buf = _pop_sentence(buf)
+                    if sentence is None:
                         break
-                    sentence = buf[: m.start() + 1].strip()
-                    buf      = buf[m.end():]
                     if sentence:
                         yield {"type": "sentence", "text": sentence}
 

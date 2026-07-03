@@ -82,3 +82,30 @@ def test_garbage_json_ignored():
     d._handle_message("{not json")
     d._handle_message(json.dumps({"type": "Metadata"}))
     assert finals == []
+
+
+# ── divisor de frases (llm_client._pop_sentence) ─────────────────────────
+
+def test_pop_sentence_abbreviations():
+    from core.llm_client import _pop_sentence
+    s, rest = _pop_sentence("Pronto para ajudar, Dr. Gilberto! O que precisa?")
+    assert s == "Pronto para ajudar, Dr. Gilberto!"
+    assert rest == "O que precisa?"
+
+
+def test_pop_sentence_legal_abbrevs():
+    from core.llm_client import _pop_sentence
+    s, rest = _pop_sentence("Conforme o art. 5º da CF, procede. Próximo item...")
+    assert s == "Conforme o art. 5º da CF, procede."
+
+
+def test_pop_sentence_normal_split():
+    from core.llm_client import _pop_sentence
+    s, rest = _pop_sentence("Bom dia. Tudo bem?")
+    assert s == "Bom dia." and rest == "Tudo bem?"
+
+
+def test_pop_sentence_incomplete_returns_none():
+    from core.llm_client import _pop_sentence
+    s, rest = _pop_sentence("Frase ainda sem fim")
+    assert s is None and rest == "Frase ainda sem fim"
