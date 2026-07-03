@@ -384,18 +384,21 @@ TOOL_DECLARATIONS = [
     {
         "name": "email_tool",
         "description": (
-            "Sends or reads emails. Use for: sending an email to someone, "
-            "checking recent emails, reading inbox."
+            "Sends, reads or searches emails. Use for: sending an email, "
+            "checking unread/new emails, searching emails by sender, subject or period."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":  {"type": "STRING", "description": "send | read"},
-                "to":      {"type": "STRING", "description": "Recipient email address (for send)"},
-                "subject": {"type": "STRING", "description": "Email subject (for send)"},
-                "body":    {"type": "STRING", "description": "Email body text (for send)"},
-                "folder":  {"type": "STRING", "description": "Mail folder (for read, default: INBOX)"},
-                "limit":   {"type": "INTEGER", "description": "Number of emails to read (default: 5)"},
+                "action":      {"type": "STRING", "description": "send | read | search"},
+                "to":          {"type": "STRING", "description": "Recipient email address (for send)"},
+                "subject":     {"type": "STRING", "description": "Email subject (send) or subject to search for (search)"},
+                "body":        {"type": "STRING", "description": "Email body text (for send)"},
+                "folder":      {"type": "STRING", "description": "Mail folder (default: INBOX)"},
+                "limit":       {"type": "INTEGER", "description": "Max emails to list (default: 5)"},
+                "unread_only": {"type": "BOOLEAN", "description": "read: only unread emails (default: true)"},
+                "sender":      {"type": "STRING", "description": "search: sender name or address"},
+                "since_days":  {"type": "INTEGER", "description": "search: only emails from the last N days"},
             },
             "required": ["action"]
         }
