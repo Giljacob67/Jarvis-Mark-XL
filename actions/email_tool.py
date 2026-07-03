@@ -127,6 +127,24 @@ def _read_email(params: dict) -> str:
     if isinstance(unread_only, str):
         unread_only = unread_only.strip().lower() not in ("false", "0", "no", "nao", "não")
 
+    if _gmail_ready():
+        try:
+            q = "is:unread in:inbox" if unread_only else "in:inbox"
+            total, top, _ = _gmail_query(q, limit)
+            if total == 0 and unread_only:
+                return "Nenhum e-mail não lido, senhor."
+            if not top:
+                return "Nenhum e-mail encontrado."
+            lines = [f"{i}: de {s}, assunto: {a}." for i, (s, a) in enumerate(top, 1)]
+            label = "não lidos" if unread_only else "recentes"
+            head  = (f"{total} e-mails {label}." if total > 1
+                     else f"1 e-mail {'não lido' if unread_only else 'recente'}.")
+            if total > len(lines):
+                head += f" Os {len(lines)} mais recentes:"
+            return head + " " + " ".join(lines)
+        except Exception as e:
+            log.warning("Gmail API read falhou (%s) — tentando IMAP", e)
+
     try:
         mail = _connect_imap(params, cfg)
         if mail is None:
@@ -159,6 +177,62 @@ def _read_email(params: dict) -> str:
         return f"Falha ao ler e-mails: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Gmail API backend (preferred when OAuth is configured; IMAP is the fallback)
+# ---------------------------------------------------------------------------
+
+def _gmail_ready() -> bool:
+    try:
+        from core.google_auth import google_ready
+        return google_ready()
+    except Exception:
+        return False
+
+
+def _gmail_service():
+    from googleapiclient.discovery import build
+    from core.google_auth import get_credentials
+    return build("gmail", "v1", credentials=get_credentials(), cache_discovery=False)
+
+
+def _gmail_headers(svc, msg_id: str) -> tuple[str, str]:
+    msg = svc.users().messages().get(
+        userId="me", id=msg_id, format="metadata",
+        metadataHeaders=["From", "Subject"],
+    ).execute()
+    hdrs = {h["name"].lower(): h["value"]
+            for h in msg.get("payload", {}).get("headers", [])}
+    return _friendly_sender(hdrs.get("from", "")), (hdrs.get("subject") or "sem assunto")
+
+
+def _gmail_query(query: str, limit: int) -> tuple[int, list[tuple[str, str]], list[str]]:
+    """Run a Gmail search. Returns (approx_total, [(sender, subject)...], ids)."""
+    svc  = _gmail_service()
+    resp = svc.users().messages().list(
+        userId="me", q=query, maxResults=limit,
+    ).execute()
+    msgs  = resp.get("messages", [])
+    total = resp.get("resultSizeEstimate", len(msgs))
+    top   = [_gmail_headers(svc, m["id"]) for m in msgs]
+    return total, top, [m["id"] for m in msgs]
+
+
+def _gmail_mark_read(params: dict) -> str:
+    limit = max(1, min(int(params.get("limit", 10)), 25))
+    svc   = _gmail_service()
+    resp  = svc.users().messages().list(
+        userId="me", q="is:unread in:inbox", maxResults=limit,
+    ).execute()
+    ids = [m["id"] for m in resp.get("messages", [])]
+    if not ids:
+        return "Nenhum e-mail não lido para marcar."
+    svc.users().messages().batchModify(
+        userId="me", body={"ids": ids, "removeLabelIds": ["UNREAD"]},
+    ).execute()
+    plural = "e-mails marcados" if len(ids) > 1 else "e-mail marcado"
+    return f"{len(ids)} {plural} como lido."
+
+
 def unread_summary(limit: int = 3) -> tuple[int, list[tuple[str, str]]]:
     """Structured unread overview for the proactive engine.
 
@@ -166,6 +240,13 @@ def unread_summary(limit: int = 3) -> tuple[int, list[tuple[str, str]]]:
     (0, []) when unconfigured or on any error — the engine must never crash
     or nag because IMAP hiccuped.
     """
+    if _gmail_ready():
+        try:
+            total, top, _ = _gmail_query("is:unread in:inbox", limit)
+            return total, top
+        except Exception as e:
+            log.warning("Gmail API unread_summary falhou (%s) — tentando IMAP", e)
+
     import email as _email
     cfg = _load_config()
     try:
@@ -201,6 +282,26 @@ def _search_email(params: dict) -> str:
 
     if not sender and not subject and not since_days:
         return "Diga o remetente, o assunto ou o período que devo buscar."
+
+    if _gmail_ready():
+        try:
+            q_parts = []
+            if sender:
+                q_parts.append(f"from:({sender})")
+            if subject:
+                q_parts.append(f"subject:({subject})")
+            if since_days:
+                q_parts.append(f"newer_than:{since_days}d")
+            total, top, _ = _gmail_query(" ".join(q_parts), limit)
+            if not top:
+                return "Nenhum e-mail encontrado com esses critérios."
+            lines = [f"{i}: de {s}, assunto: {a}." for i, (s, a) in enumerate(top, 1)]
+            head  = f"Encontrei {total} e-mail{'s' if total > 1 else ''}."
+            if total > len(lines):
+                head += f" Os {len(lines)} mais recentes:"
+            return head + " " + " ".join(lines)
+        except Exception as e:
+            log.warning("Gmail API search falhou (%s) — tentando IMAP", e)
 
     criteria: list[str] = []
     if sender:
@@ -260,5 +361,13 @@ def email_tool(
         return _read_email(params)
     elif action == "search":
         return _search_email(params)
+    elif action == "mark_read":
+        if not _gmail_ready():
+            from core.google_auth import SETUP_HINT
+            return SETUP_HINT
+        try:
+            return _gmail_mark_read(params)
+        except Exception as e:
+            return f"Falha ao marcar como lido: {e}"
     else:
-        return f"Unknown email action: {action}. Use 'send', 'read' or 'search'."
+        return f"Unknown email action: {action}. Use 'send', 'read', 'search' or 'mark_read'."

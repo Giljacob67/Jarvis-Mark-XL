@@ -42,3 +42,7 @@ config/certs/
 
 # Perfil pessoal do usuário (dados sensíveis — nunca commitar)
 memory/user_profile.md
+
+# OAuth Google (client secret + token do usuário — nunca commitar)
+config/google_credentials.json
+config/google_token.json

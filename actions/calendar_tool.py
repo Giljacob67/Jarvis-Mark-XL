@@ -69,14 +69,26 @@ def parse_datetime_br(text: str) -> datetime | None:
 
 def agenda_upcoming(hours: int = 48) -> list[dict]:
     """Structured upcoming events for the proactive engine:
-    [{'title', 'start' (datetime)}...] sorted by start."""
+    [{'title', 'start' (datetime), 'all_day': bool}...] sorted by start.
+
+    Merges the local JSON agenda with Google Calendar when the OAuth
+    integration is configured (scripts/setup_google.py).
+    """
     now = datetime.now()
     horizon = now + timedelta(hours=hours)
     out = []
     for ev in _load_agenda():
         dt = parse_datetime_br(ev.get("start", ""))
         if dt and now - timedelta(minutes=5) <= dt <= horizon:
-            out.append({"title": ev.get("title", "Evento"), "start": dt})
+            out.append({"title": ev.get("title", "Evento"), "start": dt,
+                        "all_day": False})
+    try:
+        from core.google_auth import google_ready
+        if google_ready():
+            from actions.gcal_tool import gcal_upcoming
+            out.extend(gcal_upcoming(hours=hours))
+    except Exception:
+        pass   # Google indisponível → agenda local continua funcionando
     return sorted(out, key=lambda e: e["start"])
 
 
@@ -123,8 +135,24 @@ def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
         return -1, f"Command not found: {cmd[0]}"
 
 
+def _google_ready() -> bool:
+    try:
+        from core.google_auth import google_ready
+        return google_ready()
+    except Exception:
+        return False
+
+
 def _list_events(params: dict) -> str:
     days = int(params.get("days", 7))
+
+    # Google Calendar first — the real agenda when OAuth is configured
+    if _google_ready():
+        try:
+            from actions.gcal_tool import gcal_list_speakable
+            return gcal_list_speakable(days)
+        except Exception as e:
+            print(f"[Calendar] GCal falhou ({e}) — usando agenda local")
 
     if _OS == "Darwin":
         # icalBuddy lists events from all local calendars
@@ -178,6 +206,19 @@ def _create_event(params: dict) -> str:
 
     if not start:
         return "Please provide a start date/time, sir."
+
+    # Google Calendar first when configured
+    if _google_ready():
+        dt = parse_datetime_br(start)
+        if dt is None:
+            return ("Não entendi a data. Use por exemplo 'amanhã 10:00', "
+                    "'05/07 14:30' ou '2026-07-10 09:00'.")
+        try:
+            from actions.gcal_tool import gcal_create
+            return gcal_create(title, dt)
+        except Exception as e:
+            print(f"[Calendar] GCal falhou ({e}) — gravando na agenda local")
+            return _agenda_create(title, start)
 
     if _OS == "Darwin":
         cal_clause = f'calendar "{calendar}"' if calendar else "first calendar"

@@ -159,7 +159,11 @@ class ProactiveEngine:
         today = [e for e in agenda_upcoming(hours=24)
                  if e["start"].date() == now.date()]
         agenda_str = (
-            "; ".join(f"{e['title']} às {e['start'].strftime('%H:%M')}" for e in today)
+            "; ".join(
+                f"{e['title']} (o dia todo)" if e.get("all_day")
+                else f"{e['title']} às {e['start'].strftime('%H:%M')}"
+                for e in today
+            )
             if today else "nenhum compromisso na agenda"
         )
         n_unread, top = unread_summary(limit=2)
@@ -222,6 +226,8 @@ class ProactiveEngine:
         reminded: dict = self._state.setdefault("reminded", {})
         changed = False
         for ev in agenda_upcoming(hours=26):
+            if ev.get("all_day"):
+                continue   # no clock time → time-based reminder makes no sense
             mins = (ev["start"] - now).total_seconds() / 60
             for th in sorted(thresholds):
                 if 0 < mins <= th:

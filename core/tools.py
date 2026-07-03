@@ -384,13 +384,14 @@ TOOL_DECLARATIONS = [
     {
         "name": "email_tool",
         "description": (
-            "Sends, reads or searches emails. Use for: sending an email, "
-            "checking unread/new emails, searching emails by sender, subject or period."
+            "Sends, reads, searches or marks emails as read. Use for: sending an "
+            "email, checking unread/new emails, searching by sender/subject/period, "
+            "marking inbox as read."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "send | read | search"},
+                "action":      {"type": "STRING", "description": "send | read | search | mark_read"},
                 "to":          {"type": "STRING", "description": "Recipient email address (for send)"},
                 "subject":     {"type": "STRING", "description": "Email subject (send) or subject to search for (search)"},
                 "body":        {"type": "STRING", "description": "Email body text (for send)"},

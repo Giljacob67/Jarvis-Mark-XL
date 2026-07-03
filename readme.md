@@ -123,6 +123,23 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 
 ---
 
+## Google Integration (Gmail API + Calendar — optional)
+
+Real Google Calendar in briefings/reminders and advanced Gmail search
+(`from:`, `subject:`, `newer_than:`) with mark-as-read. One-time setup:
+
+1. https://console.cloud.google.com → create a project (e.g. "Jarvis")
+2. APIs & Services → Library → enable **Gmail API** and **Google Calendar API**
+3. OAuth consent screen → External → fill name/email → **Publish app**
+   (in "Testing" status tokens expire every 7 days)
+4. Credentials → Create credentials → OAuth client ID → **Desktop app** →
+   download the JSON → save as `config/google_credentials.json`
+5. Run: `.venv/bin/python scripts/setup_google.py` (browser consent, once)
+
+Without it, everything still works via IMAP/app-password and the local agenda.
+
+---
+
 ## Built-in Tools
 
 | Tool | Description |

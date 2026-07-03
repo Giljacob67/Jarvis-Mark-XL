@@ -64,3 +64,7 @@ edge-tts              # EdgeTTS  (default, free, requires internet)
 # mediapipe             # Face authentication (face_auth_enabled=true in config)
 # langdetect            # Lightweight language detection (replaces LLM call)
 # opencv-python         # Already included above — used by face auth too
+
+# ── Integração Google (Gmail API + Calendar — opcional, via scripts/setup_google.py) ──
+google-api-python-client
+google-auth-oauthlib
