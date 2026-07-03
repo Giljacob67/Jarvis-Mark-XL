@@ -450,10 +450,72 @@ class DashboardServer:
         certs = BASE_DIR / "config" / "certs"
         return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
 
+    # ── Tailscale: acesso de qualquer lugar + TLS válido ─────────────────
+    @staticmethod
+    def _tailscale_info() -> tuple[str, str] | None:
+        """(dns_name, ip) do nó Tailscale local, ou None se indisponível."""
+        try:
+            import json as _json
+            import subprocess as _sp
+            r = _sp.run(["tailscale", "status", "--json"],
+                        capture_output=True, timeout=5)
+            if r.returncode != 0:
+                return None
+            d    = _json.loads(r.stdout)
+            self_ = d.get("Self", {})
+            name = (self_.get("DNSName") or "").rstrip(".")
+            ips  = self_.get("TailscaleIPs") or []
+            ip   = next((i for i in ips if ":" not in i), "")
+            return (name, ip) if name and ip else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _tailscale_certs() -> tuple[Path, Path] | None:
+        """Certificado válido emitido pela tailnet (sem aviso no Safari).
+
+        Tenta emitir/renovar via `tailscale cert` (requer HTTPS habilitado
+        no admin console da tailnet).  Retorna (cert, key) ou None.
+        """
+        info = DashboardServer._tailscale_info()
+        if not info:
+            return None
+        name, _ = info
+        certs_dir = BASE_DIR / "config" / "certs"
+        crt = certs_dir / f"{name}.crt"
+        key = certs_dir / f"{name}.key"
+        try:
+            import subprocess as _sp
+            certs_dir.mkdir(parents=True, exist_ok=True)
+            r = _sp.run(
+                ["tailscale", "cert",
+                 "--cert-file", str(crt), "--key-file", str(key), name],
+                capture_output=True, timeout=30,
+            )
+            if r.returncode == 0 and crt.exists() and key.exists():
+                return crt, key
+            err = r.stderr.decode(errors="replace").strip()[:120]
+            print(f"[Dashboard] tailscale cert indisponível ({err}) — "
+                  "habilite HTTPS em https://login.tailscale.com/admin/dns")
+        except Exception as e:
+            print(f"[Dashboard] tailscale cert: {e}")
+        return None
+
     def get_url(self) -> str:
         if self._ssl_enabled():
             return f"https://{self._ip}:{HTTPS_PORT}"
         return f"http://{self._ip}:{PORT}"
+
+    def get_tailscale_url(self) -> str:
+        """URL acessível de qualquer lugar via tailnet ('' se sem Tailscale)."""
+        info = self._tailscale_info()
+        if not info:
+            return ""
+        name, ip = info
+        host = name if getattr(self, "_ts_cert_ok", False) else ip
+        if self._ssl_enabled():
+            return f"https://{host}:{HTTPS_PORT}"
+        return f"http://{host}:{PORT}"
 
     def get_manual_url(self) -> str:
         """URL for manual browser entry in the remote overlay."""
@@ -829,6 +891,15 @@ class DashboardServer:
         """HTTPS on HTTPS_PORT — required for phone microphone (secure context)."""
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        # Preferir certificado válido da tailnet (Let's Encrypt via
+        # `tailscale cert`) — elimina o aviso do Safari no iPhone/Mac.
+        ts = self._tailscale_certs()
+        if ts:
+            ssl_cert, ssl_key = ts
+            self._ts_cert_ok = True
+            info = self._tailscale_info()
+            if info:
+                print(f"[Dashboard] TLS válido (tailnet): https://{info[0]}:{HTTPS_PORT}")
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, HTTPS_PORT)
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=HTTPS_PORT, log_level="warning",

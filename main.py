@@ -493,6 +493,9 @@ class JarvisLocal:
             ip = self._dashboard._ip
             url = self._dashboard.get_url()
             self.ui.write_log(f"SYS: Remote Dashboard — {url}")
+            ts_url = self._dashboard.get_tailscale_url()
+            if ts_url:
+                self.ui.write_log(f"SYS: 🌐 De qualquer lugar (Tailscale) — {ts_url}")
             if self._dashboard._ssl_enabled():
                 self.ui.write_log(f"SYS: HTTP fallback — http://{ip}:8000")
             self.ui.write_log("SYS: Clique ◉ REMOTE CONTROL para gerar QR code.")
