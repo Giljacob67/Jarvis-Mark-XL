@@ -112,7 +112,9 @@ After setup, use the **⚙ CONFIGURE** button in the right panel to change any s
 | `llm_model` | Model name | `gpt-oss:120b-cloud` |
 | `ollama_api_key` | Ollama Cloud bearer token | — |
 | `tts_engine` | `edgetts` / `kokoro` / `elevenlabs` | `elevenlabs` (first boot) |
-| `tts_voice` | Voice name / ID depending on engine | `en-US-GuyNeural` |
+| `tts_voice` | Voice name / ID depending on engine | `pt-BR-AntonioNeural` |
+| `voice_barge_in` | `true` / `false` — interrupt speech by saying the wake word while Jarvis is talking (best with headphones or a mic with echo cancellation) | `false` |
+| `tts_fallback_voice` | EdgeTTS voice used when the primary TTS engine fails mid-response | `pt-BR-AntonioNeural` |
 
 ---
 

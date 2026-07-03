@@ -317,7 +317,14 @@ class JarvisLocal:
         self._speaking        = False
         self._speaking_lock   = threading.Lock()
         self._text_queue:     queue.Queue = queue.Queue()
-        self._tts_queue:      queue.Queue = queue.Queue()
+        self._tts_queue:      queue.Queue = queue.Queue()   # (generation, text)
+        # Pipelined TTS: synth worker fills this with (gen, samples, rate);
+        # play worker drains it into the persistent output stream.  Bounded so
+        # synthesis stays only slightly ahead of playback (backpressure).
+        self._audio_q:        queue.Queue = queue.Queue(maxsize=8)
+        self._tts_generation  = 0                    # bumped by interrupt_speech()
+        self._synth_busy      = threading.Event()
+        self._audio_playing   = threading.Event()
         self._conversation:   list[dict]  = []
         self._turn_lock       = threading.Lock()
         self._listen_blocked_until = 0.0   # ignore mic briefly after TTS (echo guard)
@@ -352,6 +359,28 @@ class JarvisLocal:
             if self._speaking:
                 return True
         return time.time() < self._listen_blocked_until
+
+    def _barge_in_active(self) -> bool:
+        """True when the mic should stay open DURING playback so the user can
+        interrupt by saying the wake word.
+
+        Opt-in via "voice_barge_in": true — without echo cancellation the mic
+        hears the TTS voice itself, so only wake-word hits are honoured while
+        speaking (see _handle_voice_transcript); everything else is discarded.
+        Best with headphones or a mic with hardware AEC.
+        """
+        if not self._config.get("voice_barge_in", False):
+            return False
+        if self._phone_active:
+            return False
+        with self._speaking_lock:
+            return self._speaking
+
+    def _mic_allowed(self) -> bool:
+        """Gate used by the audio-input callbacks."""
+        if self.ui.muted:
+            return False
+        return not self._mic_blocked() or self._barge_in_active()
 
     def _voice_session_secs(self) -> float:
         return float(self._config.get("voice_session_sec", 45))
@@ -614,49 +643,56 @@ class JarvisLocal:
     # TTS queue worker — plays sentences sequentially, no overlaps
     # ------------------------------------------------------------------
 
-    def _tts_worker(self) -> None:
+    def _tts_synth_worker(self) -> None:
+        """Stage 1 of the TTS pipeline: text → audio chunks.
+
+        Runs ahead of playback: while the play worker is voicing sentence N,
+        this thread is already synthesising N+1 (network round-trip for
+        EdgeTTS/ElevenLabs, inference for Kokoro) — eliminating the silence
+        gap between sentences that the old sequential worker produced.
+        """
         # Block until TTS engine is loaded.  Queued items are preserved
         # and played immediately once loading completes — nothing is lost.
         self._tts_ready.wait(timeout=120)
 
         while True:
-            text = self._tts_queue.get()
+            gen, text = self._tts_queue.get()
             try:
-                if text:
-                    # Engine may still be loading (Kokoro first-run download can
-                    # exceed the wait above) — hold the item instead of dropping it.
-                    while self._tts is None and not self._tts_failed:
-                        time.sleep(0.5)
-                    if self._tts:
-                        with self._speaking_lock:
-                            self._speaking = True
-                        self.ui.set_state("SPEAKING")
-                        self._speak_with_fallback(text)
+                if not text or gen != self._tts_generation:
+                    continue   # utterance was interrupted while queued
+                # Engine may still be loading (Kokoro first-run download can
+                # exceed the wait above) — hold the item instead of dropping it.
+                while self._tts is None and not self._tts_failed:
+                    time.sleep(0.5)
+                if self._tts is None:
+                    continue
+                self._synth_busy.set()
+                with self._speaking_lock:
+                    self._speaking = True
+                self.ui.set_state("SPEAKING")
+                self._synth_with_fallback(gen, text)
             except Exception as e:
                 self.ui.write_log(f"ERR: TTS — {e}")
             finally:
+                self._synth_busy.clear()
                 self._tts_queue.task_done()
-                if self._tts_queue.empty():
-                    with self._speaking_lock:
-                        self._speaking = False
-                    # Shorter cooldown during active voice session (faster follow-ups).
-                    _cd = 2.0 if self._in_voice_session() else 4.0
-                    self._listen_blocked_until = time.time() + _cd
-                    if not self.ui.muted:
-                        self.ui.set_state("LISTENING")
+                self._maybe_finish_speaking()
 
-    def _speak_with_fallback(self, text: str) -> None:
-        """Play one utterance; on engine failure degrade to EdgeTTS once.
-
-        Without this, a mid-response engine failure (e.g. ElevenLabs quota,
-        network drop) produced silent dead air with only a console print.
+    def _synth_with_fallback(self, gen: int, text: str) -> None:
+        """Synthesise one utterance into the audio queue; degrade to EdgeTTS
+        on engine failure (a mid-response failure otherwise means dead air).
         """
         try:
-            self._tts.speak(text)
+            for samples, rate in self._tts.synth(text):
+                if gen != self._tts_generation:
+                    return   # interrupted mid-synthesis
+                self._audio_q.put((gen, samples, rate))
             return
         except Exception as e:
             self.ui.write_log(f"ERR: TTS ({self._config.get('tts_engine', '?')}) — {e}")
 
+        if gen != self._tts_generation:
+            return
         if self._config.get("tts_engine", "edgetts").lower() == "edgetts":
             return  # primary already is the fallback engine
 
@@ -670,9 +706,56 @@ class JarvisLocal:
                 )
                 self._tts_fallback = create_tts_player(fb_cfg)
                 self.ui.write_log("SYS: TTS degradado para EdgeTTS (fallback).")
-            self._tts_fallback.speak(text)
+            for samples, rate in self._tts_fallback.synth(text):
+                if gen != self._tts_generation:
+                    return
+                self._audio_q.put((gen, samples, rate))
         except Exception as fe:
             self.ui.write_log(f"ERR: TTS fallback — {fe}")
+
+    def _tts_play_worker(self) -> None:
+        """Stage 2 of the TTS pipeline: audio chunks → persistent output stream.
+
+        One long-lived OutputStream across all chunks and sentences — no
+        per-chunk stream open/close (which popped on PulseAudio/PipeWire).
+        """
+        from core.tts import get_audio_output
+        out = get_audio_output()
+        while True:
+            gen, samples, rate = self._audio_q.get()
+            try:
+                if gen != self._tts_generation:
+                    continue   # stale chunk from an interrupted utterance
+                self._audio_playing.set()
+                stop_evt = self._tts.stop_event if self._tts else None
+                out.play(samples, rate, stop_evt=stop_evt)
+            except Exception as e:
+                self.ui.write_log(f"ERR: áudio — {e}")
+            finally:
+                self._audio_playing.clear()
+                self._audio_q.task_done()
+                self._maybe_finish_speaking()
+
+    def _maybe_finish_speaking(self) -> None:
+        """End-of-response bookkeeping — runs when both pipeline stages drain.
+
+        Checking synth_busy/audio_playing (not just queue emptiness) closes
+        the old race where the mic could unblock mid-response if the LLM was
+        slow to emit the next sentence.
+        """
+        if not (self._tts_queue.empty() and self._audio_q.empty()
+                and not self._synth_busy.is_set()
+                and not self._audio_playing.is_set()):
+            return
+        with self._speaking_lock:
+            if not self._speaking:
+                return
+            self._speaking = False
+        # Shorter cooldown during active voice session (faster follow-ups).
+        _cd = 2.0 if self._in_voice_session() else 4.0
+        self._listen_blocked_until = time.time() + _cd
+        if not self.ui.muted:
+            self.ui.set_state("LISTENING")
 
     def set_speaking(self, value: bool) -> None:
         with self._speaking_lock:
@@ -698,16 +781,23 @@ class JarvisLocal:
             return
         with self._speaking_lock:
             self._speaking = True
-        self._tts_queue.put(text)
+        self._tts_queue.put((self._tts_generation, text))
 
     def interrupt_speech(self) -> None:
-        """Stop current playback and drop queued sentences (clean barge-in)."""
-        try:
-            while True:
-                self._tts_queue.get_nowait()
-                self._tts_queue.task_done()
-        except queue.Empty:
-            pass
+        """Stop current playback and drop queued sentences (clean barge-in).
+
+        Bumping the generation counter invalidates every queued/in-flight
+        item at once — chunks that a worker was about to emit are dropped by
+        the gen check instead of racing the queue drain below.
+        """
+        self._tts_generation += 1
+        for _q in (self._tts_queue, self._audio_q):
+            try:
+                while True:
+                    _q.get_nowait()
+                    _q.task_done()
+            except queue.Empty:
+                pass
         if self._tts:
             self._tts.stop()
         if self._tts_fallback:
@@ -1338,6 +1428,20 @@ class JarvisLocal:
         if not text:
             return
         if self._mic_blocked():
+            # Barge-in: while speaking, a wake-word hit interrupts playback and
+            # starts the new turn.  Anything else heard during playback is echo
+            # of the TTS voice — discard it.
+            if self._barge_in_active():
+                is_wake, command = self._check_wake_word(text)
+                if is_wake:
+                    self.ui.write_log(f"BARGE-IN: '{text}'")
+                    self.interrupt_speech()
+                    self._extend_voice_session()
+                    if command:
+                        self._process_message(command, from_voice=True)
+                    else:
+                        self.speak("Sim?")
+                    return
             self.ui.write_log(f"SKIP: '{text}' (echo guard)")
             return
 
@@ -1399,7 +1503,7 @@ class JarvisLocal:
             return
 
         def callback(indata, frames, time_info, status):
-            if not self._mic_blocked() and not self.ui.muted:
+            if self._mic_allowed():
                 live.feed_float(indata.flatten())
 
         try:
@@ -1411,6 +1515,8 @@ class JarvisLocal:
                 callback=callback,
             ):
                 mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
+                if self._config.get("voice_barge_in", False):
+                    mode_label += " · barge-in ON"
                 self.ui.write_log(
                     f"SYS: Mic active (DEEPGRAM LIVE) — {mode_label}"
                 )
@@ -1433,7 +1539,7 @@ class JarvisLocal:
         _stt_busy = threading.Event()
 
         def callback(indata, frames, time_info, status):
-            if not self._mic_blocked() and not self.ui.muted:
+            if self._mic_allowed():
                 try:
                     q.put_nowait(indata.copy())
                 except queue.Full:
@@ -1460,6 +1566,8 @@ class JarvisLocal:
                 callback=callback,
             ):
                 mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
+                if self._config.get("voice_barge_in", False):
+                    mode_label += " · barge-in ON"
                 stt_label  = self._config.get("stt_engine", "whisper").upper()
                 self.ui.write_log(f"SYS: Mic active ({stt_label} STT) — {mode_label}")
                 while True:
@@ -1468,7 +1576,10 @@ class JarvisLocal:
                         audio = vad.process(chunk.flatten())
                         if audio is not None and not _stt_busy.is_set():
                             _stt_busy.set()
-                            self.ui.set_state("THINKING")
+                            if not self._barge_in_active():
+                                # keep SPEAKING state while transcribing
+                                # potential barge-in audio during playback
+                                self.ui.set_state("THINKING")
                             t0 = time.time()
                             self._stt_executor.submit(_run_stt, audio, t0)
                     except queue.Empty:
@@ -1482,7 +1593,7 @@ class JarvisLocal:
         q: queue.Queue = queue.Queue(maxsize=200)
 
         def callback(indata, frames, time_info, status):
-            if not self._mic_blocked() and not self.ui.muted:
+            if self._mic_allowed():
                 try:
                     q.put_nowait(indata.copy())
                 except queue.Full:
@@ -1497,6 +1608,8 @@ class JarvisLocal:
                 callback=callback,
             ):
                 mode_label = "Continuous" if self._continuous_mode else "Wake word: JARVIS"
+                if self._config.get("voice_barge_in", False):
+                    mode_label += " · barge-in ON"
                 self.ui.write_log(f"SYS: Mic active (Vosk STT) — {mode_label}")
                 while True:
                     try:
@@ -1622,7 +1735,7 @@ class JarvisLocal:
                         self.ui.write_log("SYS: Kokoro — loading model + compiling JIT…")
                     from core.tts import create_tts_player
                     self._tts = create_tts_player(self._config)
-                    self._tts_ready.set()          # unblock _tts_worker
+                    self._tts_ready.set()          # unblock _tts_synth_worker
                     self.ui.write_log("SYS: TTS ready.")
                     self.ui.mark_startup_ready("tts")
                     self.ui.set_startup_status("● All systems ready.")
@@ -1672,7 +1785,8 @@ class JarvisLocal:
             except Exception as e:
                 self.ui.write_log(f"ERR: Web dashboard — {e}")
 
-            threading.Thread(target=self._tts_worker,        daemon=True).start()
+            threading.Thread(target=self._tts_synth_worker,  daemon=True).start()
+            threading.Thread(target=self._tts_play_worker,   daemon=True).start()
             threading.Thread(target=self._text_command_loop,  daemon=True).start()
 
             # STT loop — blocks this thread forever
