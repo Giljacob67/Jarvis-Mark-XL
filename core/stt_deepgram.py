@@ -126,6 +126,7 @@ class DeepgramLiveSTT:
         language: str | None = None,
         on_interim: Callable[[str], None] | None = None,
         sample_rate: int = 16_000,
+        keywords: list[str] | None = None,
     ):
         self._api_key = (api_key or _load_api_key()).strip()
         if not self._api_key:
@@ -134,6 +135,9 @@ class DeepgramLiveSTT:
         lang = (language or "auto").strip().lower()
         self._language = _LANG_MAP.get(lang, lang if lang != "auto" else "pt-BR")
         self._sample_rate = sample_rate
+        # Always boost the wake word; extra terms come from config
+        # ("deepgram_keywords": ["nome:3", ...] — 'word:intensifier').
+        self._keywords = ["jarvis:5"] + [k for k in (keywords or []) if k]
         self._on_final = on_final
         self._on_interim = on_interim
         self._ws = None
@@ -147,18 +151,25 @@ class DeepgramLiveSTT:
 
     def _build_url(self) -> str:
         # utterance_end_ms must be >= 1000 (Deepgram returns 400 otherwise).
-        q = urlencode({
-            "model":            self._model,
-            "language":         self._language,
-            "encoding":         "linear16",
-            "sample_rate":      self._sample_rate,
-            "channels":         1,
-            "interim_results":  "true",
-            "endpointing":      300,
-            "utterance_end_ms": 1000,
-            "punctuate":        "true",
-        })
-        return f"wss://api.deepgram.com/v1/listen?{q}"
+        params: list[tuple[str, str]] = [
+            ("model",            self._model),
+            ("language",         self._language),
+            ("encoding",         "linear16"),
+            ("sample_rate",      str(self._sample_rate)),
+            ("channels",         "1"),
+            ("interim_results",  "true"),
+            ("endpointing",      "300"),
+            ("utterance_end_ms", "1000"),
+            ("punctuate",        "true"),
+            ("smart_format",     "true"),
+        ]
+        # Keyword boosting — biases recognition toward expected words (the
+        # wake word above all: fixes 'Jarbes'/'Jarves' mishears).
+        # nova-3 replaced `keywords` with `keyterm`; send the right one.
+        key_param = "keyterm" if self._model.startswith("nova-3") else "keywords"
+        for kw in self._keywords:
+            params.append((key_param, kw))
+        return f"wss://api.deepgram.com/v1/listen?{urlencode(params)}"
 
     def start(self, timeout: float = 15) -> None:
         import websocket

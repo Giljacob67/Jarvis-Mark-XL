@@ -1534,12 +1534,16 @@ class JarvisLocal:
                 self.ui.write_log(f"SYS: 🎤 …{transcript[-40:]}")
 
         try:
+            _kw = self._config.get("deepgram_keywords", [])
+            if isinstance(_kw, str):
+                _kw = [k.strip() for k in _kw.split(",") if k.strip()]
             live = DeepgramLiveSTT(
                 on_final=_on_final,
                 on_interim=_on_interim,
                 api_key=self._config.get("deepgram_api_key"),
                 model=self._config.get("deepgram_model", "nova-2"),
                 language=self._config.get("stt_language", "pt"),
+                keywords=_kw,
             )
             live.start()
         except Exception as e:
