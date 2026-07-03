@@ -584,6 +584,7 @@ def _stream_sse(
     """
     full_content = ""
     buf          = ""
+    finish       = None
     tc_fragments: dict[int, dict] = {}
 
     with requests.post(endpoint, json=payload, headers=headers, timeout=timeout, stream=True) as resp:
@@ -638,7 +639,10 @@ def _stream_sse(
             if finish in ("stop", "tool_calls", "length"):
                 break
 
-    if buf.strip():
+    # finish_reason == "length": the tail of `buf` is an incomplete fragment,
+    # possibly cut mid-word — never speak it (TTS reading a truncated word is
+    # worse than ending one sentence early).  Full text still goes in `done`.
+    if buf.strip() and finish != "length":
         yield {"type": "sentence", "text": buf.strip()}
 
     tool_calls = _parse_openai_tool_calls([
@@ -650,6 +654,7 @@ def _stream_sse(
         "type":       "done",
         "content":    full_content.strip(),
         "tool_calls": tool_calls,
+        "truncated":  finish == "length",
     }
 
 
@@ -806,12 +811,16 @@ def call_llm_stream(
                     tool_calls.extend(tc)
 
                 if chunk.get("done"):
-                    if buf.strip():
+                    _truncated = chunk.get("done_reason") == "length"
+                    # Never speak the trailing fragment of a token-capped
+                    # reply — it may be cut mid-word.
+                    if buf.strip() and not _truncated:
                         yield {"type": "sentence", "text": buf.strip()}
                     yield {
                         "type":       "done",
                         "content":    full_content.strip(),
                         "tool_calls": tool_calls,
+                        "truncated":  _truncated,
                     }
                     return
 

@@ -1275,9 +1275,9 @@ class SetupOverlay(QWidget):
 
         _default_voice = _init.get(
             "tts_voice",
-            "GIuLCSVfgJaUuh7hYOY8" if self._sel_tts == "elevenlabs" else "en-US-GuyNeural",
+            "GIuLCSVfgJaUuh7hYOY8" if self._sel_tts == "elevenlabs" else "pt-BR-AntonioNeural",
         )
-        self._tts_voice_input = _input("en-US-GuyNeural")
+        self._tts_voice_input = _input("pt-BR-AntonioNeural")
         self._tts_voice_input.setText(_default_voice)
         voice_row.addWidget(self._tts_voice_input)
 
@@ -1286,6 +1286,9 @@ class SetupOverlay(QWidget):
         self._kokoro_combo.setFixedHeight(28)
         self._kokoro_combo.setStyleSheet(_COMBO_STYLE)
         _KOKORO_VOICES = [
+            ("pf_dora",     "pf_dora  — PT-BR Feminina (recomendada)"),
+            ("pm_alex",     "pm_alex  — PT-BR Masculina"),
+            ("pm_santa",    "pm_santa  — PT-BR Masculina 2"),
             ("af_heart",    "af_heart  — EN-F warm (recommended)"),
             ("af_sky",      "af_sky  — EN-F clear"),
             ("af_bella",    "af_bella  — EN-F bella"),

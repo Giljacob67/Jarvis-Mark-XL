@@ -311,6 +311,8 @@ class JarvisLocal:
         self._config          = _load_config()
         self._stt             = None
         self._tts             = None
+        self._tts_fallback    = None                 # lazy EdgeTTS, used if primary fails
+        self._tts_failed      = False                # True when TTS load failed for good
         self._tts_ready       = threading.Event()   # set when TTS engine is loaded
         self._speaking        = False
         self._speaking_lock   = threading.Lock()
@@ -610,13 +612,18 @@ class JarvisLocal:
         while True:
             text = self._tts_queue.get()
             try:
-                if text and self._tts:
-                    with self._speaking_lock:
-                        self._speaking = True
-                    self.ui.set_state("SPEAKING")
-                    self._tts.speak(text)
+                if text:
+                    # Engine may still be loading (Kokoro first-run download can
+                    # exceed the wait above) — hold the item instead of dropping it.
+                    while self._tts is None and not self._tts_failed:
+                        time.sleep(0.5)
+                    if self._tts:
+                        with self._speaking_lock:
+                            self._speaking = True
+                        self.ui.set_state("SPEAKING")
+                        self._speak_with_fallback(text)
             except Exception as e:
-                print(f"[TTS] speak error: {e}")
+                self.ui.write_log(f"ERR: TTS — {e}")
             finally:
                 self._tts_queue.task_done()
                 if self._tts_queue.empty():
@@ -628,6 +635,35 @@ class JarvisLocal:
                     if not self.ui.muted:
                         self.ui.set_state("LISTENING")
 
+    def _speak_with_fallback(self, text: str) -> None:
+        """Play one utterance; on engine failure degrade to EdgeTTS once.
+
+        Without this, a mid-response engine failure (e.g. ElevenLabs quota,
+        network drop) produced silent dead air with only a console print.
+        """
+        try:
+            self._tts.speak(text)
+            return
+        except Exception as e:
+            self.ui.write_log(f"ERR: TTS ({self._config.get('tts_engine', '?')}) — {e}")
+
+        if self._config.get("tts_engine", "edgetts").lower() == "edgetts":
+            return  # primary already is the fallback engine
+
+        try:
+            if self._tts_fallback is None:
+                from core.tts import create_tts_player
+                fb_cfg = dict(self._config)
+                fb_cfg["tts_engine"] = "edgetts"
+                fb_cfg["tts_voice"]  = self._config.get(
+                    "tts_fallback_voice", "pt-BR-AntonioNeural"
+                )
+                self._tts_fallback = create_tts_player(fb_cfg)
+                self.ui.write_log("SYS: TTS degradado para EdgeTTS (fallback).")
+            self._tts_fallback.speak(text)
+        except Exception as fe:
+            self.ui.write_log(f"ERR: TTS fallback — {fe}")
+
     def set_speaking(self, value: bool) -> None:
         with self._speaking_lock:
             self._speaking = value
@@ -637,16 +673,40 @@ class JarvisLocal:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str) -> None:
-        if not text or not self._tts:
+        if not text or (self._tts is None and self._tts_failed):
+            return
+        # Single sanitisation point for ALL speech paths (streamed sentences,
+        # tool results, acks, errors): strips markdown/emoji/URLs so the voice
+        # never reads raw formatting; pt-BR normalisation for Kokoro, which
+        # has no server-side text normalisation.
+        from core.tts_text import sanitize_for_tts
+        text = sanitize_for_tts(
+            text,
+            normalize_ptbr=self._config.get("tts_engine", "").lower() == "kokoro",
+        )
+        if not text:
             return
         with self._speaking_lock:
             self._speaking = True
         self._tts_queue.put(text)
 
+    def interrupt_speech(self) -> None:
+        """Stop current playback and drop queued sentences (clean barge-in)."""
+        try:
+            while True:
+                self._tts_queue.get_nowait()
+                self._tts_queue.task_done()
+        except queue.Empty:
+            pass
+        if self._tts:
+            self._tts.stop()
+        if self._tts_fallback:
+            self._tts_fallback.stop()
+
     def speak_error(self, tool_name: str, error) -> None:
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
-        self.speak(f"{tool_name} encountered an error.")
+        self.speak(f"A ferramenta {tool_name} encontrou um erro.")
 
     def _confirm_tool(self, name: str, args: dict) -> bool:
         """Show a blocking Qt confirmation dialog. Returns True if approved."""
@@ -701,9 +761,12 @@ class JarvisLocal:
         try:
             from core.tts import create_tts_player
             self._tts = create_tts_player(new_config)
+            self._tts_fallback = None   # rebuild lazily against the new config
+            self._tts_failed   = False
             self._tts_ready.set()   # ensure worker isn't blocked
             self.ui.write_log("SYS: TTS reconfigured.")
         except Exception as e:
+            self._tts_failed = True
             self.ui.write_log(f"ERR: TTS reconfigure — {e}")
 
         # STT: hot-reload if same engine type; full restart needed if engine changed
@@ -1022,6 +1085,13 @@ class JarvisLocal:
             self._process_message_locked(user_text, from_voice=from_voice)
 
     def _process_message_locked(self, user_text: str, *, from_voice: bool = False) -> None:
+        # New command while speaking (typed/phone — mic is gated during TTS):
+        # cut the current answer's audio instead of stacking both responses.
+        with self._speaking_lock:
+            _was_speaking = self._speaking
+        if _was_speaking:
+            self.interrupt_speech()
+
         self.ui.set_state("THINKING")
         prefix = "Voz" if from_voice else "You"
         self.ui.write_log(f"{prefix}: {user_text}")
@@ -1064,6 +1134,7 @@ class JarvisLocal:
             # Sentences already queued to TTS during streaming (may be empty
             # for tool-call rounds where the model emits no content).
             _streamed: list[str] = []
+            _truncated = False
 
             # After tool execution, always re-enable tools for follow-up rounds.
             round_tools = tools_for_turn if _round == 0 else OLLAMA_TOOLS
@@ -1084,14 +1155,20 @@ class JarvisLocal:
                             _route = chat_provider if _use_chat_route else "power"
                             self.ui.write_log(f"SYS: ⚡ first token {_lat}ms ({_route})")
                     elif event["type"] == "sentence":
-                        # Voice: speak only the first sentence (faster turn-around).
-                        if not from_voice or not _streamed:
-                            self.speak(event["text"])
+                        # Speak EVERY sentence as it streams in — voice included.
+                        # (Previously voice turns spoke only the first sentence
+                        # and silently dropped the rest of the answer's audio.
+                        # Brevity is enforced at the prompt level, not by
+                        # amputating already-generated speech.)
+                        self.speak(event["text"])
                         _streamed.append(event["text"])
                         self.ui.stream_sentence(event["text"])
                     elif event["type"] == "done":
                         final_content    = event["content"]
                         final_tool_calls = event["tool_calls"]
+                        _truncated       = event.get("truncated", False)
+                        if _truncated:
+                            self.ui.write_log("SYS: ⚠ resposta truncada (limite de tokens)")
             except RuntimeError as e:
                 self.speak_error("LLM", e)
                 return
@@ -1106,7 +1183,14 @@ class JarvisLocal:
                     self._conversation.append(assistant_msg)
                     if not _streamed:
                         self.ui.write_log(f"Jarvis: {reply}")
-                        self.speak(reply)
+                        _spoken = reply
+                        if _truncated:
+                            # Token-capped reply: speak only up to the last
+                            # complete sentence (never a mid-word cut).
+                            _m = re.match(r"^(.*[.!?])", reply, re.S)
+                            if _m:
+                                _spoken = _m.group(1)
+                        self.speak(_spoken)
                     self.ui.add_history("jarvis", reply)
                     self._persist_assistant(reply)
                     self._dashboard_broadcast(
@@ -1530,6 +1614,7 @@ class JarvisLocal:
                     import traceback as _tb; _tb.print_exc()
                     self.ui.write_log(f"ERR: TTS — {e}")
                     self.ui.mark_startup_ready("tts", error=True)
+                    self._tts_failed = True
                     self._tts_ready.set()
 
             # Launch all three simultaneously

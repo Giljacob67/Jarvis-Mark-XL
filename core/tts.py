@@ -87,7 +87,8 @@ def _play_np(samples, sample_rate: int) -> None:
     sd.wait()
 
 
-def _play_pcm_stream(response, sample_rate: int = 24_000) -> None:
+def _play_pcm_stream(response, sample_rate: int = 24_000,
+                     stop_evt: threading.Event | None = None) -> None:
     """Play raw int16 PCM from a streaming HTTP response as chunks arrive."""
     import requests as _req
     if not isinstance(response, _req.Response):
@@ -95,6 +96,8 @@ def _play_pcm_stream(response, sample_rate: int = 24_000) -> None:
     leftover = b""
     with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16") as stream:
         for chunk in response.iter_content(chunk_size=8192):
+            if stop_evt is not None and stop_evt.is_set():
+                break
             if not chunk:
                 continue
             data = leftover + chunk
@@ -128,16 +131,19 @@ def _play_audio_bytes(audio_bytes: bytes) -> None:
 class EdgeTTSEngine:
     """Microsoft EdgeTTS – free, requires internet."""
 
-    def __init__(self, voice: str = "en-US-GuyNeural"):
+    def __init__(self, voice: str = "pt-BR-AntonioNeural"):
         self.voice = voice
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, stop_evt: threading.Event | None = None) -> None:
         loop = asyncio.new_event_loop()
         try:
             audio_bytes = loop.run_until_complete(self._synth(text))
         finally:
             loop.close()
+        if stop_evt is not None and stop_evt.is_set():
+            return
         if audio_bytes:
+            # sd.play() playback — interrupted externally via sd.stop().
             _play_audio_bytes(audio_bytes)
 
     async def _synth(self, text: str) -> bytes:
@@ -312,7 +318,7 @@ class KokoroTTSEngine:
         except Exception as e:
             log.warning("Kokoro warmup warning: %s", e)
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, stop_evt: threading.Event | None = None) -> None:
         with self._lock:
             if self._pipeline is None:
                 self._init()
@@ -326,24 +332,40 @@ class KokoroTTSEngine:
         audio_q: _queue.Queue[np.ndarray | None] = _queue.Queue(maxsize=4)
         synth_error: list[Exception] = []
 
+        def _put(item) -> bool:
+            # Bounded put that aborts on stop_evt so this thread can't leak
+            # blocked forever after the consumer bails out.
+            while True:
+                if stop_evt is not None and stop_evt.is_set():
+                    return False
+                try:
+                    audio_q.put(item, timeout=0.25)
+                    return True
+                except _queue.Full:
+                    continue
+
         def _synth():
             try:
                 for _, _, audio in self._pipeline(text, voice=self.voice, speed=self.speed):
+                    if stop_evt is not None and stop_evt.is_set():
+                        break
                     if audio is not None:
                         arr = _to_numpy(audio)
                         arr = _compress_silence(arr)
-                        if arr.size > 0:
-                            audio_q.put(arr)          # blocks if player is slow (backpressure)
+                        if arr.size > 0 and not _put(arr):
+                            break
             except Exception as exc:
                 synth_error.append(exc)
             finally:
-                audio_q.put(None)                     # sentinel → player exits
+                _put(None)                            # sentinel → player exits
 
         synth_thread = threading.Thread(target=_synth, daemon=True)
         synth_thread.start()
 
         # Player runs in this thread so sd.wait() doesn't block the synth thread.
         while True:
+            if stop_evt is not None and stop_evt.is_set():
+                break
             arr = audio_q.get()
             if arr is None:
                 break
@@ -381,7 +403,7 @@ class ElevenLabsTTSEngine:
         self.similarity_boost = similarity_boost
         self.speed = speed
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, stop_evt: threading.Event | None = None) -> None:
         import requests
         headers = {
             "xi-api-key":   self.api_key,
@@ -410,7 +432,7 @@ class ElevenLabsTTSEngine:
             stream=True,
         )
         resp.raise_for_status()
-        _play_pcm_stream(resp, sample_rate=24_000)
+        _play_pcm_stream(resp, sample_rate=24_000, stop_evt=stop_evt)
 
 
 # ---------------------------------------------------------------------------
@@ -424,9 +446,10 @@ class TTSPlayer:
     """
 
     def __init__(self, engine):
-        self._engine  = engine
-        self._playing = False
-        self._lock    = threading.Lock()
+        self._engine   = engine
+        self._playing  = False
+        self._lock     = threading.Lock()
+        self._stop_evt = threading.Event()
 
     @property
     def is_playing(self) -> bool:
@@ -438,15 +461,21 @@ class TTSPlayer:
         on_start: Callable | None = None,
         on_done:  Callable | None = None,
     ) -> None:
-        """Synthesise and play text. BLOCKING – call from a dedicated thread."""
+        """Synthesise and play text. BLOCKING – call from a dedicated thread.
+
+        Raises on engine failure so the caller can log to the UI and try a
+        fallback engine — a swallowed error here means silent dead air.
+        """
         try:
+            self._stop_evt.clear()
             with self._lock:
                 self._playing = True
             if on_start:
                 on_start()
-            self._engine.speak(text)
+            self._engine.speak(text, stop_evt=self._stop_evt)
         except Exception as e:
             log.error("TTS Error: %s", e)
+            raise
         finally:
             with self._lock:
                 self._playing = False
@@ -454,7 +483,9 @@ class TTSPlayer:
                 on_done()
 
     def stop(self) -> None:
-        sd.stop()
+        """Interrupt current playback. Safe to call from any thread."""
+        self._stop_evt.set()   # engines poll this per chunk (Kokoro/ElevenLabs)
+        sd.stop()              # kills sd.play()-based playback (EdgeTTS/Kokoro chunk)
         with self._lock:
             self._playing = False
 
@@ -485,6 +516,6 @@ def create_tts_player(config: dict) -> TTSPlayer:
             speed=speed,
         )
     else:   # edgetts (default)
-        voice  = config.get("tts_voice", "en-US-GuyNeural")
+        voice  = config.get("tts_voice", "pt-BR-AntonioNeural")
         engine = EdgeTTSEngine(voice=voice)
     return TTSPlayer(engine)
