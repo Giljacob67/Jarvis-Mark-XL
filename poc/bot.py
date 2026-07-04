@@ -87,9 +87,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         ),
     )
 
+    # gpt-oss-120b: tool calling disciplinado (o llama-3.3 emite chamadas
+    # como TEXTO '<function=...>' no meio da fala, envenena o histórico e
+    # todas as completions seguintes falham no Groq).
     llm = GroqLLMService(
         api_key=CFG["groq_api_key"],
-        model=CFG.get("llm_fallback_model", "llama-3.3-70b-versatile"),
+        model=CFG.get("llm_model", "openai/gpt-oss-120b"),
     )
 
     from poc.tools_bridge import build_tools, set_say_hook
