@@ -97,12 +97,23 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     # gpt-oss-120b: tool calling disciplinado (o llama-3.3 emite chamadas
-    # como TEXTO '<function=...>' no meio da fala, envenena o histórico e
-    # todas as completions seguintes falham no Groq).
-    llm = GroqLLMService(
-        api_key=CFG["groq_api_key"],
-        model=CFG.get("llm_model", "openai/gpt-oss-120b"),
-    )
+    # como TEXTO '<function=...>' no meio da fala e envenena o histórico).
+    # Provedor: Cerebras quando a chave existe (medido: 0.79s p/ 1º token,
+    # cota 30-60k tok/min vs 8k do Groq free — que dava 429 em 2-3 turnos);
+    # Groq como fallback.
+    if CFG.get("cerebras_api_key", "").strip():
+        from pipecat.services.cerebras.llm import CerebrasLLMService
+        llm = CerebrasLLMService(
+            api_key=CFG["cerebras_api_key"],
+            model="gpt-oss-120b",
+        )
+        logger.info("LLM: Cerebras gpt-oss-120b")
+    else:
+        llm = GroqLLMService(
+            api_key=CFG["groq_api_key"],
+            model=CFG.get("llm_model", "openai/gpt-oss-120b"),
+        )
+        logger.info("LLM: Groq gpt-oss-120b")
 
     from poc.tools_bridge import build_tools, set_say_hook
 
