@@ -58,9 +58,18 @@ def _system_prompt() -> str:
         "— NUNCA fabrique dados. Ao falar resultados, resuma para voz: nada de ler "
         "listas longas item a item, destaque o que importa.",
     ]
-    profile = BASE_DIR / "memory" / "user_profile.md"
-    if profile.exists():
-        parts.append("[PERFIL DO USUÁRIO]\n" + profile.read_text(encoding="utf-8"))
+    # Perfil COMPACTO: o tier gratuito do Groq tem 8k tokens/min — o perfil
+    # completo (~1.5k tokens) + schemas estourava o limite em 2-3 turnos
+    # (429 → resposta atrasada ~1min). Versão de voz: só o essencial.
+    parts.append(
+        "[USUÁRIO] Gilberto Jacob ('senhor' ou 'Dr. Gilberto'), 59, advogado "
+        "sênior em Maringá/PR — sócio do JGG Group (Direito Agrário e Bancário/"
+        "Crédito Rural, PR e MT) e do Tax Group (tributário). Esposa Girlene "
+        "(veterinária), filha Mylena (médica), cães Oliver, Margot e Lola. "
+        "Treina 6x/semana (DoomCore). Domina Python/automação. "
+        "Tom: direto, denso, sem rodeios; jurídico avançado sem explicações "
+        "básicas; pode discordar dele; use os dados com naturalidade."
+    )
     parts.append(f"[AGORA] {datetime.now().strftime('%A, %d %b %Y %H:%M')}")
     return "\n\n".join(parts)
 
