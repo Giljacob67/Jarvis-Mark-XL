@@ -85,9 +85,19 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
 
     context = LLMContext()
     context.add_message({"role": "system", "content": _system_prompt()})
+
+    # Modo seguro contra loop de eco: JARVIS_NO_BARGE_IN=1 silencia o STT
+    # enquanto o bot fala (sem interrupção, mas imune a eco de caixas).
+    import os
+    user_params_kwargs: dict = {"vad_analyzer": SileroVADAnalyzer()}
+    if os.environ.get("JARVIS_NO_BARGE_IN") == "1":
+        from pipecat.turns.user_mute import AlwaysUserMuteStrategy
+        user_params_kwargs["user_mute_strategies"] = [AlwaysUserMuteStrategy()]
+        logger.info("Modo NO-BARGE-IN: STT mudo enquanto o bot fala")
+
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(**user_params_kwargs),
     )
 
     pipeline = Pipeline([

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS v2 — Voz</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #070c14; color: #cfe9ff; font-family: system-ui, sans-serif;
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; min-height: 100vh; gap: 24px; padding: 24px; }
+    h1 { font-size: 20px; letter-spacing: 2px; color: #00d4ff; }
+    #orb { width: 120px; height: 120px; border-radius: 50%;
+           border: 3px solid #00d4ff44; display: grid; place-items: center;
+           font-size: 13px; transition: all .3s; }
+    #orb.on  { border-color: #00d4ff; box-shadow: 0 0 40px #00d4ff55; }
+    #orb.bot { border-color: #7CFC00; box-shadow: 0 0 40px #7CFC0055; }
+    button { background: #00d4ff; color: #04121f; border: 0; padding: 14px 34px;
+             border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .4; }
+    #log { font-size: 12px; color: #6d8aa5; max-width: 480px; text-align: center;
+           white-space: pre-line; }
+    .badge { font-size: 11px; color: #7CFC00; }
+  </style>
+</head>
+<body>
+  <h1>JARVIS v2 — TESTE DE VOZ</h1>
+  <div id="orb">off</div>
+  <button id="btn">Conectar</button>
+  <div class="badge" id="aec"></div>
+  <div id="log">Fone de ouvido recomendado para o primeiro teste.\nCom caixas, o cancelamento de eco do navegador é ativado explicitamente.</div>
+  <audio id="botaudio" autoplay></audio>
+
+<script>
+const btn = document.getElementById('btn');
+const orb = document.getElementById('orb');
+const log = (t) => document.getElementById('log').textContent = t;
+let pc = null;
+
+btn.onclick = async () => {
+  if (pc) { pc.close(); pc = null; btn.textContent = 'Conectar'; orb.className=''; orb.textContent='off'; return; }
+  btn.disabled = true;
+  try {
+    // O ponto central deste cliente: processamento do navegador LIGADO
+    // explicitamente (o cliente pré-pronto não define nada).
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl:  true,
+        channelCount: 1,
+      }
+    });
+    const track = stream.getAudioTracks()[0];
+    const st = track.getSettings();
+    document.getElementById('aec').textContent =
+      `AEC=${st.echoCancellation} NS=${st.noiseSuppression} AGC=${st.autoGainControl}`;
+
+    pc = new RTCPeerConnection();
+    pc.addTrack(track, stream);
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+    pc.ontrack = (e) => { document.getElementById('botaudio').srcObject = e.streams[0]; };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') { orb.className='on'; orb.textContent='ouvindo'; log('Conectado — fale naturalmente. Interrompa falando por cima.'); }
+      if (['failed','disconnected','closed'].includes(pc.connectionState)) { orb.className=''; orb.textContent='off'; }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    // vanilla ICE: espera terminar a coleta antes de enviar
+    await new Promise((res) => {
+      if (pc.iceGatheringState === 'complete') return res();
+      pc.addEventListener('icegatheringstatechange',
+        () => pc.iceGatheringState === 'complete' && res());
+    });
+
+    const resp = await fetch('/api/offer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+    });
+    const answer = await resp.json();
+    await pc.setRemoteDescription(answer);
+    btn.textContent = 'Desconectar';
+  } catch (e) {
+    log('Erro: ' + e.message);
+    if (pc) { pc.close(); pc = null; }
+  } finally {
+    btn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
