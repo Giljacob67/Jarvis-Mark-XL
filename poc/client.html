@@ -65,20 +65,37 @@ btn.onclick = async () => {
       if (['failed','disconnected','closed'].includes(pc.connectionState)) { orb.className=''; orb.textContent='off'; }
     };
 
+    log('Criando oferta WebRTC…');
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    // vanilla ICE: espera terminar a coleta antes de enviar
+
+    log('Coletando candidatos ICE…');
+    // vanilla ICE: espera terminar a coleta (com teto de 4s — host candidates
+    // locais chegam em ms; STUN inacessível não pode travar o fluxo)
     await new Promise((res) => {
-      if (pc.iceGatheringState === 'complete') return res();
-      pc.addEventListener('icegatheringstatechange',
-        () => pc.iceGatheringState === 'complete' && res());
+      const t = setTimeout(res, 4000);
+      if (pc.iceGatheringState === 'complete') { clearTimeout(t); return res(); }
+      pc.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); }
+      });
     });
 
-    const resp = await fetch('/api/offer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
-    });
+    log('Enviando oferta ao servidor…');
+    const url = window.location.origin + '/api/offer';
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+      });
+    } catch (fe) {
+      throw new Error(`fetch para ${url} falhou (${fe.name}: ${fe.message}). ` +
+        'Verifique extensões (adblock), modo "somente HTTPS" do Chrome, ' +
+        'ou recarregue com Ctrl+Shift+R.');
+    }
+    if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
+    log('Aplicando resposta…');
     const answer = await resp.json();
     await pc.setRemoteDescription(answer);
     btn.textContent = 'Desconectar';
