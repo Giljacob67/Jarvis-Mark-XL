@@ -25,7 +25,7 @@ sys.path.insert(0, str(BASE_DIR))
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -50,6 +50,13 @@ def _system_prompt() -> str:
         "da Marvel — nunca encene esse papel nem invente compromissos/e-mails). "
         "Conversa por VOZ: respostas curtas (1-3 frases), naturais, diretas, "
         "em português brasileiro. Sem markdown, sem listas, sem emojis.",
+        "FERRAMENTAS: use-as em vez de inventar. Agenda/compromissos → calendar. "
+        "E-mails → email_tool (read para não lidos, search por remetente/assunto/"
+        "período, send para enviar, mark_read para marcar lidos). Pesquisa na web "
+        "→ web_search. Notas → notes. Timer/alarme → timer. Abrir aplicativo ou "
+        "site → open_app. Se a ferramenta não retornar nada, diga isso honestamente "
+        "— NUNCA fabrique dados. Ao falar resultados, resuma para voz: nada de ler "
+        "listas longas item a item, destaque o que importa.",
     ]
     profile = BASE_DIR / "memory" / "user_profile.md"
     if profile.exists():
@@ -83,7 +90,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         model=CFG.get("llm_fallback_model", "llama-3.3-70b-versatile"),
     )
 
-    context = LLMContext()
+    from poc.tools_bridge import build_tools, set_say_hook
+
+    context = LLMContext(tools=build_tools())
     context.add_message({"role": "system", "content": _system_prompt()})
 
     # Modo seguro contra loop de eco: JARVIS_NO_BARGE_IN=1 silencia o STT
@@ -114,6 +123,18 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         pipeline,
         params=PipelineParams(enable_metrics=True),
     )
+
+    # Fala espontânea vinda das actions (ex.: timer disparando) — injeta
+    # direto no TTS do pipeline, de qualquer thread.
+    import asyncio as _aio
+    _loop = _aio.get_running_loop()
+
+    def _say(text: str) -> None:
+        _aio.run_coroutine_threadsafe(
+            task.queue_frames([TTSSpeakFrame(text)]), _loop
+        )
+
+    set_say_hook(_say)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
