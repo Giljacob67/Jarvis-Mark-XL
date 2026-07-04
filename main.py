@@ -376,6 +376,7 @@ class JarvisLocal:
         self._speak_target        = "pc"   # "pc" | "phone" | "telegram"
         self._phone_tts_queue:   queue.Queue = queue.Queue()
         self._telegram            = None   # TelegramBot (se token configurado)
+        self._dg_live             = None   # DeepgramLiveSTT ativo (p/ barge-in flush)
 
         # Continuous mode: listen without wake word
         self._continuous_mode = self._config.get("continuous_mode", False)
@@ -424,6 +425,29 @@ class JarvisLocal:
         if self.ui.muted:
             return False
         return not self._mic_blocked() or self._barge_in_active()
+
+    def _is_barge_in_wake(self, text: str) -> bool:
+        """Wake word nos 3 primeiros tokens de uma frase curta (≤8 tokens).
+
+        Critério deliberadamente mais rígido que o _check_wake_word normal:
+        durante a fala do TTS, o texto pode ser eco (ou eco+voz mesclados) —
+        'jarvis' no meio de uma frase longa não é um pedido de interrupção.
+        """
+        import difflib
+        words = [w.strip(",.!?;:") for w in text.lower().split() if w.strip(",.!?;:")]
+        if not words or len(words) > 8:
+            return False
+        for w in words[:3]:
+            if w in self.WAKE_WORD_VARIANTS:
+                return True
+            if len(w) >= self._WAKE_FUZZY_MIN_LEN:
+                score = max(
+                    difflib.SequenceMatcher(None, w, v).ratio()
+                    for v in self.WAKE_WORD_VARIANTS
+                )
+                if score >= self._WAKE_FUZZY_THRESHOLD:
+                    return True
+        return False
 
     def _voice_session_secs(self) -> float:
         return float(self._config.get("voice_session_sec", 45))
@@ -1532,20 +1556,27 @@ class JarvisLocal:
         if not text:
             return
         if self._mic_blocked():
-            # Barge-in: while speaking, a wake-word hit interrupts playback and
-            # starts the new turn.  Anything else heard during playback is echo
-            # of the TTS voice — discard it.
-            if self._barge_in_active():
-                is_wake, command = self._check_wake_word(text)
-                if is_wake:
-                    self.ui.write_log(f"BARGE-IN: '{text}'")
-                    self.interrupt_speech()
-                    self._extend_voice_session()
-                    if command:
-                        self._process_message(command, from_voice=True)
-                    else:
-                        self.speak("Sim?")
-                    return
+            # Barge-in: durante a fala, SÓ um wake word no INÍCIO de frase
+            # curta interrompe (fala do usuário; eco do TTS nunca começa com
+            # 'Jarvis' em frase curta).  O texto capturado durante a fala é
+            # DESCARTADO — pode estar mesclado com eco residual; o usuário
+            # repete o comando no silêncio que se abre (mic limpo).
+            if self._barge_in_active() and self._is_barge_in_wake(text):
+                self.ui.write_log(f"BARGE-IN: interrompendo ('{text[:60]}')")
+                self.interrupt_speech()
+                # Descarrega o stream do STT e engole os finais residuais da
+                # mistura eco+voz que ainda estão a caminho.
+                try:
+                    if self._dg_live:
+                        self._dg_live.finalize()
+                        self._dg_live.reset_utterance()
+                except Exception:
+                    pass
+                self._listen_blocked_until = time.time() + 1.2
+                self._extend_voice_session()
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+                return
             self.ui.write_log(f"SKIP: '{text}' (echo guard)")
             return
 
@@ -1605,6 +1636,7 @@ class JarvisLocal:
                 keywords=_kw,
             )
             live.start()
+            self._dg_live = live
         except Exception as e:
             self.ui.write_log(f"WARN: Deepgram live failed ({e}) — using batch STT")
             self._listen_whisper()
