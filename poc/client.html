@@ -81,7 +81,11 @@ btn.onclick = async () => {
     });
 
     log('Enviando oferta ao servidor…');
-    const url = window.location.origin + '/api/offer';
+    // Aberto por file:// (duplo clique)? Aponta para o servidor local
+    // explicitamente — o CORS do runner é liberado.
+    const base = window.location.protocol === 'file:'
+        ? 'http://localhost:7860' : window.location.origin;
+    const url = base + '/api/offer';
     let resp;
     try {
       resp = await fetch(url, {
