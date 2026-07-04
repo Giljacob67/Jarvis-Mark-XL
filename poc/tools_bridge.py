@@ -107,10 +107,22 @@ def build_tools() -> ToolsSchema:
         if fn["name"] not in _SELECTED:
             continue
         params = fn.get("parameters", {})
+        # Groq valida os argumentos contra o schema ESTRITAMENTE e o Llama
+        # costuma emitir números/booleanos como texto ('5', 'true') — a
+        # completion inteira era rejeitada e o bot ficava mudo.  Todos os
+        # parâmetros viram string no schema; as actions já coagem os tipos.
+        props = {}
+        for k, v in (params.get("properties") or {}).items():
+            nv = dict(v)
+            if nv.get("type") in ("integer", "number", "boolean"):
+                nv["type"] = "string"
+                nv["description"] = (nv.get("description", "") +
+                                     " (valor como texto, ex: '5' ou 'true')").strip()
+            props[k] = nv
         schemas.append(FunctionSchema(
             name=fn["name"],
             description=fn["description"],
-            properties=params.get("properties", {}),
+            properties=props,
             required=params.get("required", []),
             handler=_handle,
         ))

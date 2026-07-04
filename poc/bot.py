@@ -73,6 +73,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         settings=DeepgramSTTService.Settings(
             model=CFG.get("deepgram_model", "nova-2"),
             language="pt-BR",
+            # boost da wake word — sem isso vira 'Jermes'/'Ô gás'
+            extra={"keywords": ["jarvis:5"]},
         ),
     )
 
@@ -98,7 +100,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # Modo seguro contra loop de eco: JARVIS_NO_BARGE_IN=1 silencia o STT
     # enquanto o bot fala (sem interrupção, mas imune a eco de caixas).
     import os
-    user_params_kwargs: dict = {"vad_analyzer": SileroVADAnalyzer()}
+    from pipecat.audio.vad.vad_analyzer import VADParams
+    # stop_secs maior = menos cortes no meio da frase (falante pausado)
+    user_params_kwargs: dict = {
+        "vad_analyzer": SileroVADAnalyzer(params=VADParams(stop_secs=1.0)),
+    }
     if os.environ.get("JARVIS_NO_BARGE_IN") == "1":
         from pipecat.turns.user_mute import AlwaysUserMuteStrategy
         user_params_kwargs["user_mute_strategies"] = [AlwaysUserMuteStrategy()]
