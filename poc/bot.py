@@ -124,9 +124,18 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # enquanto o bot fala (sem interrupção, mas imune a eco de caixas).
     import os
     from pipecat.audio.vad.vad_analyzer import VADParams
-    # stop_secs maior = menos cortes no meio da frase (falante pausado)
+    from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
+    from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+    # Interrupção exige ≥3 PALAVRAS transcritas enquanto o bot fala — eco
+    # residual das caixas dispara o VAD mas não vira palavras, então parou
+    # de cortar as respostas no meio ('ficou meio louco'). Com o bot calado
+    # a estratégia exige só 1 palavra (comportamento normal preservado).
     user_params_kwargs: dict = {
         "vad_analyzer": SileroVADAnalyzer(params=VADParams(stop_secs=1.0)),
+        "user_turn_strategies": UserTurnStrategies(
+            start=[MinWordsUserTurnStartStrategy(min_words=3)],
+        ),
     }
     if os.environ.get("JARVIS_NO_BARGE_IN") == "1":
         from pipecat.turns.user_mute import AlwaysUserMuteStrategy
