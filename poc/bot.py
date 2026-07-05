@@ -50,6 +50,11 @@ def _system_prompt() -> str:
         "da Marvel — nunca encene esse papel nem invente compromissos/e-mails). "
         "Conversa por VOZ: respostas curtas (1-3 frases), naturais, diretas, "
         "em português brasileiro. Sem markdown, sem listas, sem emojis.",
+        "NÚMEROS: escreva SEMPRE por extenso — 'duzentos e um e-mails', 'quinze "
+        "de julho às dez da manhã', 'mil e quinhentos reais'. Números longos "
+        "(processos, CNPJ, telefone) NÃO leia por extenso: refira-se de forma "
+        "curta ('a execução fiscal de Balneário Arroio do Silva', 'o processo "
+        "terminando em vinte e três').",
         "FERRAMENTAS: use-as em vez de inventar. Agenda/compromissos → calendar. "
         "E-mails → email_tool (read para não lidos, search por remetente/assunto/"
         "período, send para enviar, mark_read para marcar lidos). Pesquisa na web "
@@ -93,6 +98,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             voice=CFG.get("tts_voice", "GIuLCSVfgJaUuh7hYOY8"),
             model=CFG.get("tts_model", "eleven_turbo_v2_5"),
             language="pt",
+            # normalização server-side de números/datas que escaparem do prompt
+            apply_text_normalization="on",
         ),
     )
 
