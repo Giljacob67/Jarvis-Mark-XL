@@ -27,6 +27,14 @@ from pipecat.processors.aggregators.llm_context import FunctionSchema, ToolsSche
 # Ferramentas expostas nesta fase (nome → callable(parameters, ...) -> str)
 _SELECTED = ("calendar", "email_tool", "web_search", "notes", "timer", "open_app")
 
+# Num servidor headless (VPS, sem DISPLAY) as ferramentas de desktop saem do
+# schema — o LLM nem fica sabendo que existem. Quando o satélite de desktop
+# entrar (Fase 3b), elas voltam como RPC via tailnet.
+import os as _os
+_DESKTOP_ONLY = {"open_app"}
+if not (_os.environ.get("DISPLAY") or _os.environ.get("WAYLAND_DISPLAY")):
+    _SELECTED = tuple(t for t in _SELECTED if t not in _DESKTOP_ONLY)
+
 
 class HeadlessUI:
     """Substitui o JarvisUI para actions que só usam write_log/estado."""
