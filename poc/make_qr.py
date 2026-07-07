@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-URL = "https://ubuntu-8gb-hel1-1.tail54aaa6.ts.net/files/voz.html"
+URL = "https://ubuntu-8gb-hel1-1.tail54aaa6.ts.net/voz"
 
 
 def main() -> None:
