@@ -99,8 +99,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             voice=CFG.get("tts_voice", "GIuLCSVfgJaUuh7hYOY8"),
             model=CFG.get("tts_model", "eleven_turbo_v2_5"),
             language="pt",
-            # normalização server-side de números/datas que escaparem do prompt
-            apply_text_normalization="on",
+            # NÃO usar apply_text_normalization: o turbo v2.5 não suporta em
+            # websocket streaming — o ElevenLabs fecha o contexto SEM áudio
+            # (resposta muda com TTFB de 59s). Números por extenso já vêm do
+            # prompt da persona.
         ),
     )
 
