@@ -37,7 +37,7 @@
   </style>
 </head>
 <body>
-  <h1>JARVIS v2 — TESTE DE VOZ <span style="color:#4a6a85;font-size:11px">build v3</span></h1>
+  <h1>JARVIS v2 — TESTE DE VOZ <span style="color:#4a6a85;font-size:11px">build v4</span></h1>
   <div id="orb">off</div>
   <div id="detail"></div>
   <button id="btn">Conectar</button>
@@ -63,12 +63,14 @@
 </script>
 
 <script>
+document.getElementById('log').textContent = '✅ JavaScript ATIVO — pode tocar em Conectar';
 const btn = document.getElementById('btn');
 const orb = document.getElementById('orb');
 const log = (t) => document.getElementById('log').textContent = t;
 let pc = null;
 
-btn.onclick = async () => {
+const conectar = async () => {
+  document.getElementById('log').textContent = '⏳ toque recebido — pedindo microfone…';
   if (pc) { pc.close(); pc = null; btn.textContent = 'Conectar'; orb.className=''; orb.textContent='off'; return; }
   btn.disabled = true;
   try {
@@ -165,6 +167,8 @@ btn.onclick = async () => {
     btn.disabled = false;
   }
 };
+btn.addEventListener('click', conectar);
+btn.addEventListener('touchend', (e) => { e.preventDefault(); conectar(); });
 </script>
 </body>
 </html>
