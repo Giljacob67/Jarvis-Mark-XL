@@ -15,6 +15,17 @@
            font-size: 13px; transition: all .3s; }
     #orb.on  { border-color: #00d4ff; box-shadow: 0 0 40px #00d4ff55; }
     #orb.bot { border-color: #7CFC00; box-shadow: 0 0 40px #7CFC0055; }
+    /* Presence Engine — um visual por estado */
+    #orb.listening      { border-color: #00d4ff; box-shadow: 0 0 40px #00d4ff66; }
+    #orb.thinking       { border-color: #ffb347; box-shadow: 0 0 40px #ffb34766;
+                          animation: pulse 1.2s infinite; }
+    #orb.speaking       { border-color: #7CFC00; box-shadow: 0 0 46px #7CFC0077; }
+    #orb.executing_tool { border-color: #cc66ff; box-shadow: 0 0 46px #cc66ff77;
+                          animation: pulse .8s infinite; }
+    #orb.error_recovery { border-color: #ff4455; box-shadow: 0 0 40px #ff445588; }
+    #orb.idle           { border-color: #33475a; box-shadow: none; }
+    @keyframes pulse { 50% { transform: scale(1.05); } }
+    #detail { font-size: 12px; color: #9fd8ff; min-height: 16px; }
     button { background: #00d4ff; color: #04121f; border: 0; padding: 14px 34px;
              border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; }
     button:disabled { opacity: .4; }
@@ -26,6 +37,7 @@
 <body>
   <h1>JARVIS v2 — TESTE DE VOZ</h1>
   <div id="orb">off</div>
+  <div id="detail"></div>
   <button id="btn">Conectar</button>
   <div class="badge" id="aec"></div>
   <div id="log">Fone de ouvido recomendado para o primeiro teste.\nCom caixas, o cancelamento de eco do navegador é ativado explicitamente.</div>
@@ -59,6 +71,24 @@ btn.onclick = async () => {
     pc = new RTCPeerConnection();
     pc.addTrack(track, stream);
     pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    // ── HUD ao vivo: Presence Engine do servidor → data channel ──────────
+    const STATE_PT = {
+      idle: 'em espera', listening: 'ouvindo', thinking: 'pensando',
+      speaking: 'falando', executing_tool: 'executando',
+      observing_screen: 'observando tela', proactive_waiting: 'de prontidão',
+      error_recovery: 'recuperando',
+    };
+    const dc = pc.createDataChannel('jarvis');
+    dc.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
+      if (m.type !== 'jarvis-state') return;      // ignora outros protocolos
+      orb.className = m.state;
+      orb.textContent = STATE_PT[m.state] || m.state;
+      document.getElementById('detail').textContent =
+        m.state === 'executing_tool' && m.detail ? `🔧 ${m.detail}` :
+        (m.detail || '');
+    };
     pc.ontrack = (e) => { document.getElementById('botaudio').srcObject = e.streams[0]; };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') { orb.className='on'; orb.textContent='ouvindo'; log('Conectado — fale naturalmente. Interrompa falando por cima.'); }

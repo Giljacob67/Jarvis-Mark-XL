@@ -68,6 +68,17 @@ def _say(text: str) -> None:
 def _dispatch(name: str, args: dict) -> str:
     """Executa a action (bloqueante) — mesma rota do main.py, sem Qt."""
     ui = HeadlessUI()
+    # Ferramentas de memória (Fase 1) — locais, sem action externa
+    if name in ("remember", "recall", "forget", "context_summary"):
+        from memory.layered import get_memory
+        m = get_memory()
+        if name == "remember":
+            return m.remember(args.get("text", ""))
+        if name == "recall":
+            return m.recall(args.get("query", ""))
+        if name == "forget":
+            return m.forget(args.get("query", ""))
+        return m.context_summary()
     if name == "calendar":
         from actions.calendar_tool import calendar_tool
         return calendar_tool(parameters=args, player=ui) or "Feito."
@@ -90,19 +101,74 @@ def _dispatch(name: str, args: dict) -> str:
     return f"Ferramenta desconhecida: {name}"
 
 
+# Ferramentas lentas ganham backchannel ("Um momento.") — com moderação:
+# só onde a latência real justifica, e frase curta única.
+_SLOW_TOOLS = {"web_search", "email_tool"}
+_BACKCHANNEL = ("Um momento.", "Já verifico.", "Verificando.")
+_bc_i = 0
+
+
 async def _handle(params) -> None:
-    """Handler async do Pipecat — roda a action em thread (não bloqueia áudio)."""
+    """Handler async do Pipecat — permissões → backchannel → execução →
+    auditoria + memória operacional. Action roda em thread (não bloqueia áudio)."""
+    import json as _json
+
+    from core.permissions import audit, confirmation_request, decide
+    from core.presence import get_presence
+    from memory.layered import get_memory
+
     name = params.function_name
     args = params.arguments or {}
+    presence, mem = get_presence(), get_memory()
     logger.info(f"🔧 {name} {args}")
+
+    # ── Safety & Permissions Layer ────────────────────────────────────────
+    mode = _permission_mode()
+    decision, reason = decide(name, args, mode)
+    if decision == "deny":
+        audit(name, args, "deny", reason)
+        await params.result_callback(
+            f"AÇÃO BLOQUEADA ({reason}). Informe o usuário educadamente.")
+        return
+    if decision == "confirm":
+        audit(name, args, "confirm_requested", reason)
+        await params.result_callback(confirmation_request(name, args))
+        return
+
+    presence.executing(name)
+    global _bc_i
+    if name in _SLOW_TOOLS and _say_hook:
+        _say(_BACKCHANNEL[_bc_i % len(_BACKCHANNEL)])
+        _bc_i += 1
+
     try:
         result = await asyncio.get_event_loop().run_in_executor(
             None, _dispatch, name, args
         )
+        audit(name, args, "executed", str(result)[:120])
     except Exception as e:
         logger.error(f"{name} falhou: {e}")
         result = f"A ferramenta {name} encontrou um erro: {e}"
+        audit(name, args, "error", str(e)[:120])
+        presence.error(f"{name}: {e}")
+
+    # memória operacional + episódica (só ações que mudam estado)
+    mem.op_action(f"{name}({_json.dumps(args, ensure_ascii=False)[:60]})")
+    from core.permissions import risk_of
+    if risk_of(name, args) in ("medium", "high") and name != "remember":
+        mem.remember(f"Executei {name}: {str(result)[:100]}", kind="tool")
+
+    presence.thinking("pós-ferramenta")
     await params.result_callback(str(result)[:2000])
+
+
+def _permission_mode() -> str:
+    try:
+        import json as _json
+        cfg = _json.loads((BASE_DIR / "config" / "api_keys.json").read_text())
+        return cfg.get("permission_mode", "supervised")
+    except Exception:
+        return "supervised"
 
 
 def build_tools() -> ToolsSchema:
@@ -127,6 +193,16 @@ def build_tools() -> ToolsSchema:
                 nv["description"] = (nv.get("description", "") +
                                      " (valor como texto, ex: '5' ou 'true')").strip()
             props[k] = nv
+        # ferramentas com ações de risco alto ganham o parâmetro de
+        # confirmação verbal (fluxo do core/permissions.py)
+        from core.permissions import RISK_MATRIX
+        entry = RISK_MATRIX.get(fn["name"])
+        if entry == "high" or (isinstance(entry, dict) and "high" in entry.values()):
+            props["confirm"] = {
+                "type": "string",
+                "description": "Envie 'sim' SOMENTE após o usuário confirmar "
+                               "verbalmente uma ação de risco alto.",
+            }
         schemas.append(FunctionSchema(
             name=fn["name"],
             description=fn["description"],
@@ -134,5 +210,15 @@ def build_tools() -> ToolsSchema:
             required=params.get("required", []),
             handler=_handle,
         ))
+
+    # Ferramentas de memória (Fase 1: lembre/esqueça/recorde/contexto)
+    from memory.layered import MEMORY_TOOL_SCHEMAS
+    for ms in MEMORY_TOOL_SCHEMAS:
+        schemas.append(FunctionSchema(
+            name=ms["name"], description=ms["description"],
+            properties=ms["properties"], required=ms["required"],
+            handler=_handle,
+        ))
+
     logger.info(f"Ferramentas ativas: {[s.name for s in schemas]}")
     return ToolsSchema(standard_tools=schemas)

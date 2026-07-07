@@ -25,7 +25,19 @@ sys.path.insert(0, str(BASE_DIR))
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    ErrorFrame,
+    LLMRunFrame,
+    OutputTransportMessageUrgentFrame,
+    TTSSpeakFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
+from pipecat.observers.base_observer import BaseObserver, FramePushed
+
+from core.presence import PresenceState, get_presence
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -42,6 +54,42 @@ from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 CFG = json.loads((BASE_DIR / "config" / "api_keys.json").read_text(encoding="utf-8"))
+
+
+def _personality_prompt() -> str:
+    """Personality Engine (Fase 1): perfil ativo de config/personality.json."""
+    try:
+        cfg = json.loads((BASE_DIR / "config" / "personality.json")
+                         .read_text(encoding="utf-8"))
+        active = cfg.get("active", "executivo")
+        prof = cfg.get("profiles", {}).get(active, {})
+        return prof.get("prompt", "")
+    except Exception:
+        return ""
+
+
+class PresenceObserver(BaseObserver):
+    """Mapeia os frames do pipeline → estados do Presence Engine.
+
+    O Presence é framework-agnóstico; ESTE é o único ponto que conhece
+    os frames do Pipecat.
+    """
+
+    async def on_push_frame(self, data: FramePushed):
+        p = get_presence()
+        f = data.frame
+        if isinstance(f, UserStartedSpeakingFrame):
+            p.listening()
+        elif isinstance(f, UserStoppedSpeakingFrame):
+            p.thinking()
+        elif isinstance(f, BotStartedSpeakingFrame):
+            p.speaking()
+        elif isinstance(f, BotStoppedSpeakingFrame):
+            # executing_tool tem precedência (bridge controla o próprio estado)
+            if p.state != PresenceState.EXECUTING_TOOL:
+                p.listening()
+        elif isinstance(f, ErrorFrame) and not getattr(f, "fatal", False):
+            p.error(str(getattr(f, "error", ""))[:80])
 
 
 def _system_prompt() -> str:
@@ -75,6 +123,9 @@ def _system_prompt() -> str:
         "Tom: direto, denso, sem rodeios; jurídico avançado sem explicações "
         "básicas; pode discordar dele; use os dados com naturalidade."
     )
+    pers = _personality_prompt()
+    if pers:
+        parts.append("[PERSONALIDADE] " + pers)
     parts.append(f"[AGORA] {datetime.now().strftime('%A, %d %b %Y %H:%M')}")
     return "\n\n".join(parts)
 
@@ -167,6 +218,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True),
+        observers=[PresenceObserver()],
     )
 
     # Fala espontânea vinda das actions (ex.: timer disparando) — injeta
@@ -181,9 +233,22 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
 
     set_say_hook(_say)
 
+    # ── Presence → HUD: cada transição vira mensagem no data channel ─────
+    presence = get_presence()
+
+    def _push_state(state, detail: str) -> None:
+        msg = OutputTransportMessageUrgentFrame(
+            message={"type": "jarvis-state", "state": state.value,
+                     "detail": detail}
+        )
+        _aio.run_coroutine_threadsafe(task.queue_frames([msg]), _loop)
+
+    presence.on_change(_push_state)
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Cliente conectado — saudando")
+        presence.listening()
         context.add_message({
             "role": "user",
             "content": "Cumprimente o usuário em uma frase curta e diga que esta "
