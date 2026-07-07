@@ -31,6 +31,8 @@
     button:disabled { opacity: .4; }
     #log { font-size: 12px; color: #6d8aa5; max-width: 480px; text-align: center;
            white-space: pre-line; }
+    #err { font-size: 13px; color: #ff6b7a; max-width: 480px; text-align: center;
+           white-space: pre-line; word-break: break-word; }
     .badge { font-size: 11px; color: #7CFC00; }
   </style>
 </head>
@@ -41,7 +43,24 @@
   <button id="btn">Conectar</button>
   <div class="badge" id="aec"></div>
   <div id="log">Fone de ouvido recomendado para o primeiro teste.\nCom caixas, o cancelamento de eco do navegador é ativado explicitamente.</div>
-  <audio id="botaudio" autoplay></audio>
+  <div id="err"></div>
+  <audio id="botaudio" autoplay playsinline></audio>
+
+<script>
+// Diagnóstico visível: NENHUM erro pode morrer em silêncio (Safari!).
+(function () {
+  var box = function () { return document.getElementById('err'); };
+  window.onerror = function (msg, src, line) {
+    box().textContent = '⚠ JS: ' + msg + ' (linha ' + line + ')';
+    return false;
+  };
+  window.addEventListener('unhandledrejection', function (ev) {
+    var r = ev.reason || {};
+    box().textContent = '⚠ Promessa: ' + (r.name ? r.name + ': ' : '') +
+                        (r.message || String(r));
+  });
+})();
+</script>
 
 <script>
 const btn = document.getElementById('btn');
@@ -89,7 +108,11 @@ btn.onclick = async () => {
         m.state === 'executing_tool' && m.detail ? `🔧 ${m.detail}` :
         (m.detail || '');
     };
-    pc.ontrack = (e) => { document.getElementById('botaudio').srcObject = e.streams[0]; };
+    pc.ontrack = (e) => {
+      const a = document.getElementById('botaudio');
+      a.srcObject = e.streams[0];
+      a.play().catch(() => {});   // iOS: garante playback pós-gesto
+    };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') { orb.className='on'; orb.textContent='ouvindo'; log('Conectado — fale naturalmente. Interrompa falando por cima.'); }
       if (['failed','disconnected','closed'].includes(pc.connectionState)) { orb.className=''; orb.textContent='off'; }
@@ -134,7 +157,9 @@ btn.onclick = async () => {
     await pc.setRemoteDescription(answer);
     btn.textContent = 'Desconectar';
   } catch (e) {
-    log('Erro: ' + e.message);
+    document.getElementById('err').textContent =
+      '⚠ ' + (e.name ? e.name + ': ' : '') + e.message;
+    log('Falhou — leia o erro acima e me mande.');
     if (pc) { pc.close(); pc = null; }
   } finally {
     btn.disabled = false;
