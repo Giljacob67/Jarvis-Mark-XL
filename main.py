@@ -1966,7 +1966,10 @@ class JarvisLocal:
                 self.ui.write_log(f"WARN: Proatividade — {e}")
 
             # Bot Telegram — canal remoto de qualquer lugar (texto + voz)
-            if self._config.get("telegram_bot_token", "").strip():
+            # telegram_v1_disabled: true quando o serviço 24/7 da v2 (VPS)
+            # assume o bot — dois pollers no mesmo token conflitam (409).
+            if self._config.get("telegram_bot_token", "").strip() \
+                    and not self._config.get("telegram_v1_disabled", False):
                 try:
                     from core.telegram_bot import TelegramBot
                     self._telegram = TelegramBot(self)

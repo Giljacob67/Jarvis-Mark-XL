@@ -69,6 +69,10 @@ def _dispatch(name: str, args: dict) -> str:
     """Executa a action (bloqueante) — mesma rota do main.py, sem Qt."""
     ui = HeadlessUI()
     # Ferramentas de memória (Fase 1) — locais, sem action externa
+    if name == "briefing":
+        from poc.briefing import generate
+        return generate(mode=args.get("mode", "medio"),
+                        question=args.get("question"))
     if name in ("remember", "recall", "forget", "context_summary"):
         from memory.layered import get_memory
         m = get_memory()
@@ -211,9 +215,10 @@ def build_tools() -> ToolsSchema:
             handler=_handle,
         ))
 
-    # Ferramentas de memória (Fase 1: lembre/esqueça/recorde/contexto)
+    # Ferramentas de memória (Fase 1) + briefing (Fase 2)
     from memory.layered import MEMORY_TOOL_SCHEMAS
-    for ms in MEMORY_TOOL_SCHEMAS:
+    from poc.briefing import BRIEFING_TOOL_SCHEMA
+    for ms in [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA]:
         schemas.append(FunctionSchema(
             name=ms["name"], description=ms["description"],
             properties=ms["properties"], required=ms["required"],

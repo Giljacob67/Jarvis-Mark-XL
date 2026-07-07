@@ -56,18 +56,6 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 CFG = json.loads((BASE_DIR / "config" / "api_keys.json").read_text(encoding="utf-8"))
 
 
-def _personality_prompt() -> str:
-    """Personality Engine (Fase 1): perfil ativo de config/personality.json."""
-    try:
-        cfg = json.loads((BASE_DIR / "config" / "personality.json")
-                         .read_text(encoding="utf-8"))
-        active = cfg.get("active", "executivo")
-        prof = cfg.get("profiles", {}).get(active, {})
-        return prof.get("prompt", "")
-    except Exception:
-        return ""
-
-
 class PresenceObserver(BaseObserver):
     """Mapeia os frames do pipeline → estados do Presence Engine.
 
@@ -90,44 +78,6 @@ class PresenceObserver(BaseObserver):
                 p.listening()
         elif isinstance(f, ErrorFrame) and not getattr(f, "fatal", False):
             p.error(str(getattr(f, "error", ""))[:80])
-
-
-def _system_prompt() -> str:
-    parts = [
-        "Você é o JARVIS, assistente de voz REAL do usuário (não o personagem "
-        "da Marvel — nunca encene esse papel nem invente compromissos/e-mails). "
-        "Conversa por VOZ: respostas curtas (1-3 frases), naturais, diretas, "
-        "em português brasileiro. Sem markdown, sem listas, sem emojis.",
-        "NÚMEROS: escreva SEMPRE por extenso — 'duzentos e um e-mails', 'quinze "
-        "de julho às dez da manhã', 'mil e quinhentos reais'. Números longos "
-        "(processos, CNPJ, telefone) NÃO leia por extenso: refira-se de forma "
-        "curta ('a execução fiscal de Balneário Arroio do Silva', 'o processo "
-        "terminando em vinte e três').",
-        "FERRAMENTAS: use-as em vez de inventar. Agenda/compromissos → calendar. "
-        "E-mails → email_tool (read para não lidos, search por remetente/assunto/"
-        "período, send para enviar, mark_read para marcar lidos). Pesquisa na web "
-        "→ web_search. Notas → notes. Timer/alarme → timer. Abrir aplicativo ou "
-        "site → open_app. Se a ferramenta não retornar nada, diga isso honestamente "
-        "— NUNCA fabrique dados. Ao falar resultados, resuma para voz: nada de ler "
-        "listas longas item a item, destaque o que importa.",
-    ]
-    # Perfil COMPACTO: o tier gratuito do Groq tem 8k tokens/min — o perfil
-    # completo (~1.5k tokens) + schemas estourava o limite em 2-3 turnos
-    # (429 → resposta atrasada ~1min). Versão de voz: só o essencial.
-    parts.append(
-        "[USUÁRIO] Gilberto Jacob ('senhor' ou 'Dr. Gilberto'), 59, advogado "
-        "sênior em Maringá/PR — sócio do JGG Group (Direito Agrário e Bancário/"
-        "Crédito Rural, PR e MT) e do Tax Group (tributário). Esposa Girlene "
-        "(veterinária), filha Mylena (médica), cães Oliver, Margot e Lola. "
-        "Treina 6x/semana (DoomCore). Domina Python/automação. "
-        "Tom: direto, denso, sem rodeios; jurídico avançado sem explicações "
-        "básicas; pode discordar dele; use os dados com naturalidade."
-    )
-    pers = _personality_prompt()
-    if pers:
-        parts.append("[PERSONALIDADE] " + pers)
-    parts.append(f"[AGORA] {datetime.now().strftime('%A, %d %b %Y %H:%M')}")
-    return "\n\n".join(parts)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
@@ -176,7 +126,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     from poc.tools_bridge import build_tools, set_say_hook
 
     context = LLMContext(tools=build_tools())
-    context.add_message({"role": "system", "content": _system_prompt()})
+    from poc.persona import system_prompt
+    context.add_message({"role": "system", "content": system_prompt("voice")})
 
     # Modo seguro contra loop de eco: JARVIS_NO_BARGE_IN=1 silencia o STT
     # enquanto o bot fala (sem interrupção, mas imune a eco de caixas).
@@ -259,6 +210,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Cliente desconectou")
+        set_say_hook(None)   # proatividade volta a anunciar só via Telegram
+        presence.idle()
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
@@ -277,6 +230,11 @@ async def bot(runner_args: RunnerArguments):
 
 
 if __name__ == "__main__":
+    # Serviços 24/7 (Telegram + proatividade) — só quando JARVIS_SERVICES=1
+    # (a unit do VPS define; o POC local de voz fica só com a voz).
+    from poc.services import ensure_services_started
+    ensure_services_started()
+
     from pipecat.runner.run import main
 
     main()
