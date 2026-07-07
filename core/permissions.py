@@ -46,6 +46,7 @@ RISK_MATRIX: dict[str, str | dict[str, str]] = {
                         "clear": "high", "*": "medium"},         # add/delete=medium
     "timer":           {"list": "low", "*": "medium"},
     # memória (Fase 1)
+    "briefing":        "low",
     "remember":        "medium",
     "recall":          "low",
     "context_summary": "low",
