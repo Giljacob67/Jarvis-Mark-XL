@@ -27,13 +27,43 @@ from pipecat.processors.aggregators.llm_context import FunctionSchema, ToolsSche
 # Ferramentas expostas nesta fase (nome → callable(parameters, ...) -> str)
 _SELECTED = ("calendar", "email_tool", "web_search", "notes", "timer", "open_app")
 
-# Num servidor headless (VPS, sem DISPLAY) as ferramentas de desktop saem do
-# schema — o LLM nem fica sabendo que existem. Quando o satélite de desktop
-# entrar (Fase 3b), elas voltam como RPC via tailnet.
+# Ferramentas de desktop em servidor headless: se o SATÉLITE estiver
+# configurado (satellite_url no config), elas rodam por RPC na tailnet;
+# sem satélite E sem DISPLAY, saem do schema.
+import json as _json
 import os as _os
+
 _DESKTOP_ONLY = {"open_app"}
-if not (_os.environ.get("DISPLAY") or _os.environ.get("WAYLAND_DISPLAY")):
+
+
+def _satellite_cfg() -> tuple[str, str]:
+    try:
+        cfg = _json.loads((BASE_DIR / "config" / "api_keys.json").read_text())
+        return cfg.get("satellite_url", ""), cfg.get("satellite_token", "")
+    except Exception:
+        return "", ""
+
+
+_SAT_URL, _SAT_TOKEN = _satellite_cfg()
+_HAS_DISPLAY = bool(_os.environ.get("DISPLAY") or _os.environ.get("WAYLAND_DISPLAY"))
+if not _HAS_DISPLAY and not _SAT_URL:
     _SELECTED = tuple(t for t in _SELECTED if t not in _DESKTOP_ONLY)
+
+
+def _satellite_call(endpoint: str, payload: dict, timeout: int = 120) -> str:
+    import requests
+    try:
+        r = requests.post(f"{_SAT_URL}{endpoint}", json=payload,
+                          headers={"X-Jarvis-Token": _SAT_TOKEN},
+                          timeout=timeout)
+        if r.status_code != 200:
+            return f"Satélite respondeu {r.status_code}."
+        return r.json().get("result", "Feito.")
+    except requests.exceptions.ConnectionError:
+        return ("O computador do escritório parece desligado — o satélite "
+                "não respondeu.")
+    except Exception as e:
+        return f"Falha no satélite: {e}"
 
 
 class HeadlessUI:
@@ -69,6 +99,14 @@ def _dispatch(name: str, args: dict) -> str:
     """Executa a action (bloqueante) — mesma rota do main.py, sem Qt."""
     ui = HeadlessUI()
     # Ferramentas de memória (Fase 1) — locais, sem action externa
+    if name == "screen_look":
+        if not _SAT_URL:
+            return "Visão de tela indisponível: satélite não configurado."
+        return _satellite_call("/screen_look",
+                               {"question": args.get("question", "")})
+    if name == "open_app" and not _HAS_DISPLAY and _SAT_URL:
+        return _satellite_call("/open_app",
+                               {"app_name": args.get("app_name", "")}, timeout=30)
     if name == "briefing":
         from poc.briefing import generate
         return generate(mode=args.get("mode", "medio"),
@@ -139,7 +177,11 @@ async def _handle(params) -> None:
         await params.result_callback(confirmation_request(name, args))
         return
 
-    presence.executing(name)
+    if name == "screen_look":
+        from core.presence import PresenceState
+        presence.transition(PresenceState.OBSERVING_SCREEN, "capturando tela")
+    else:
+        presence.executing(name)
     global _bc_i
     if name in _SLOW_TOOLS and _say_hook:
         _say(_BACKCHANNEL[_bc_i % len(_BACKCHANNEL)])
@@ -215,10 +257,21 @@ def build_tools() -> ToolsSchema:
             handler=_handle,
         ))
 
-    # Ferramentas de memória (Fase 1) + briefing (Fase 2)
+    # Ferramentas de memória (Fase 1) + briefing (Fase 2) + visão (satélite)
     from memory.layered import MEMORY_TOOL_SCHEMAS
     from poc.briefing import BRIEFING_TOOL_SCHEMA
-    for ms in [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA]:
+    extra_schemas = [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA]
+    if _SAT_URL or _HAS_DISPLAY:
+        extra_schemas.append({
+            "name": "screen_look",
+            "description": "Olha a TELA DO COMPUTADOR do usuário e responde "
+                           "('o que estou vendo?', 'me ajude com essa tela', "
+                           "'explique esse erro', 'qual o próximo passo aqui?').",
+            "properties": {"question": {"type": "string",
+                           "description": "O que o usuário quer saber da tela"}},
+            "required": [],
+        })
+    for ms in extra_schemas:
         schemas.append(FunctionSchema(
             name=ms["name"], description=ms["description"],
             properties=ms["properties"], required=ms["required"],

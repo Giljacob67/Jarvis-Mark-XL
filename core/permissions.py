@@ -47,6 +47,7 @@ RISK_MATRIX: dict[str, str | dict[str, str]] = {
     "timer":           {"list": "low", "*": "medium"},
     # memória (Fase 1)
     "briefing":        "low",
+    "screen_look":     "medium",   # privacidade: nunca 'low'; modo privado no satélite
     "remember":        "medium",
     "recall":          "low",
     "context_summary": "low",

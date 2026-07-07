@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS - satelite de desktop (open_app + visao de tela via tailnet)
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Jarvis-Mark-XL
+ExecStart=%h/Jarvis-Mark-XL/.venv-pipecat/bin/python satellite/desktop_agent.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
