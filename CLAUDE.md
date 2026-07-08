@@ -12,13 +12,15 @@ completo em `memory/user_profile.md`, gitignored). Converse e commite em
 | Branch | `main` | `pipecat-poc` |
 | Voz | app Qt + PortAudio (main.py) | **Pipecat 1.4 + WebRTC** (`poc/bot.py`) |
 | Cliente | janela desktop | navegador (`poc/client.html`) — AEC nativo |
-| Status | estável, voz aposentando | **validada pelo usuário**, em produção no VPS |
+| Status | **APOSENTADA (2026-07-08)** | **validada pelo usuário**, em produção no VPS |
 
-O CÉREBRO é compartilhado: `actions/` (30+ tools), `core/tools.py` (fonte
-única dos schemas), Gmail/Calendar OAuth (`core/google_auth.py`), memória.
-A ponte da v2 é `poc/tools_bridge.py` (headless, function calling nativo).
-No `main` ainda vivem: bot Telegram (`core/telegram_bot.py`), motor de
-proatividade (`core/proactive.py`), dashboard PWA — migração pendente p/ v2.
+A G1 não roda mais em lugar nenhum: `run.sh` (e os atalhos do desktop)
+agora abrem o cliente de voz v2 no Chrome em modo --app; main.py fica no
+repo só como arqueologia. Telegram e proatividade JÁ SÃO v2
+(poc/services.py, no VPS). O CÉREBRO compartilhado segue vivo e em uso:
+`actions/` (30+ tools), `core/tools.py` (schemas G1 referenciados pelo
+registry), Gmail/Calendar OAuth (`core/google_auth.py`), memória.
+A ponte da v2 é `poc/tools_bridge.py` sobre `core/registry.py`.
 
 ## Deployments
 
@@ -74,6 +76,6 @@ híbrido) · observabilidade (core/health.py, tool status_sistema) ·
 **registry unificado** (core/registry.py — ferramenta nova = 1 entrada
 em TOOLS + risco na RISK_MATRIX; tools_bridge é só ponte Pipecat).
 
-Pendentes: aposentar loop de voz Qt · modo offline · wake word (só se
-voltar o "sempre ouvindo") · higiene: rotacionar token Telegram
-(Cerebras já rotacionada em 2026-07-08).
+Pendentes: modo offline (provavelmente só "modo degradado" honesto) ·
+wake word (só se voltar o "sempre ouvindo") · higiene: rotacionar token
+Telegram (Cerebras já rotacionada em 2026-07-08).
