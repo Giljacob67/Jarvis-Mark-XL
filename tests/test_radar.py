@@ -107,8 +107,8 @@ def test_build_entry_calcula_e_explicita():
 
 def _write_prazos(tmp_path, monkeypatch, entries):
     p = tmp_path / "prazos.jsonl"
-    p.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries),
-                 encoding="utf-8")
+    p.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n"
+                         for e in entries), encoding="utf-8")
     monkeypatch.setattr(radar, "PRAZOS_PATH", p)
 
 
@@ -136,6 +136,35 @@ def test_pending_ultima_linha_vence(tmp_path, monkeypatch):
         {**base, "status": "baixado"},   # baixa posterior anula a linha antiga
     ])
     assert pending(15) == []
+
+
+def test_settle_baixa_unica(tmp_path, monkeypatch):
+    today = date.today().isoformat()
+    _write_prazos(tmp_path, monkeypatch, [
+        {"gmail_id": "a", "data_limite": today, "status": "aberto",
+         "ato": "contestação", "resumo": "Contestar na execução fiscal.",
+         "processo": "0001234-56.2026.8.16.0017"},
+        {"gmail_id": "b", "data_limite": today, "status": "aberto",
+         "ato": "embargos", "resumo": "Opor embargos de declaração.",
+         "processo": "999"},
+    ])
+    r = radar.settle("contestacao execucao")     # sem acento: normaliza
+    assert "Baixado" in r
+    assert [p["gmail_id"] for p in pending(15)] == ["b"]
+
+
+def test_settle_ambiguo_ou_ausente(tmp_path, monkeypatch):
+    today = date.today().isoformat()
+    _write_prazos(tmp_path, monkeypatch, [
+        {"gmail_id": "a", "data_limite": today, "status": "aberto",
+         "ato": "embargos", "resumo": "Embargos no processo 1.", "processo": "1"},
+        {"gmail_id": "b", "data_limite": today, "status": "aberto",
+         "ato": "embargos", "resumo": "Embargos no processo 2.", "processo": "2"},
+    ])
+    r = radar.settle("embargos")
+    assert "Qual deles" in r and len(pending(15)) == 2   # ambíguo: não baixa
+    assert "Nenhum prazo" in radar.settle("apelação")
+    assert "Diga qual" in radar.settle("")
 
 
 def test_speakable(tmp_path, monkeypatch):

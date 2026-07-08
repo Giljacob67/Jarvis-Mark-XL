@@ -359,17 +359,58 @@ def speakable(days_ahead: int = 15) -> str:
             "sistema): " + "; ".join(lines))
 
 
+def _normalize(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s.lower())
+    return "".join(c for c in s if not unicodedata.combining(c))
+
+
+def settle(query: str) -> str:
+    """Dá baixa num prazo cumprido ('baixa o prazo da contestação').
+
+    Casa as palavras da consulta contra processo+ato+resumo dos prazos
+    abertos. Só baixa com casamento ÚNICO — ambiguidade devolve a lista
+    para o usuário escolher (baixar prazo errado é pior que perguntar).
+    """
+    words = [w for w in _normalize(query).split() if len(w) >= 3]
+    if not words:
+        return "Diga qual prazo baixar (processo, ato ou parte do resumo)."
+    matches = []
+    for p in pending(days_ahead=365):
+        text = _normalize(f"{p['processo']} {p['ato']} {p['resumo']}")
+        if all(w in text for w in words):
+            matches.append(p)
+    if not matches:
+        return (f"Nenhum prazo aberto casa com «{query}». " + speakable(30))
+    if len(matches) > 1:
+        opts = "; ".join(f"{p['data_limite']}: {p['resumo'] or p['ato']}"
+                         for p in matches)
+        return (f"Encontrei {len(matches)} prazos: {opts}. "
+                "Qual deles devo baixar?")
+    p = dict(matches[0])
+    p["status"] = "baixado"
+    p["baixado_em"] = time.strftime("%Y-%m-%d %H:%M")
+    _append_prazo(p)          # última linha vence — baixa sem apagar histórico
+    logger.info(f"radar: baixado — {p['resumo']}")
+    return (f"Baixado: {p['resumo'] or p['ato']} "
+            f"(vencia {p['data_limite']}). Bom trabalho, senhor.")
+
+
 RADAR_TOOL_SCHEMA = {
     "name": "radar_prazos",
     "description": "Radar de prazos jurídicos: lista prazos processuais "
-                   "pendentes ('quais meus prazos?', 'tenho prazo vencendo?') "
-                   "ou varre o e-mail atrás de intimações novas agora "
-                   "(action='scan').",
+                   "pendentes ('quais meus prazos?', 'tenho prazo vencendo?'), "
+                   "varre o e-mail atrás de intimações novas (action='scan') "
+                   "ou dá baixa num prazo cumprido (action='baixar', 'já "
+                   "protocolei a contestação, baixa o prazo').",
     "properties": {
         "action": {"type": "string",
-                   "description": "'list' (padrão) ou 'scan'"},
+                   "description": "'list' (padrão), 'scan' ou 'baixar'"},
         "days": {"type": "string",
                  "description": "horizonte em dias (padrão '15')"},
+        "query": {"type": "string",
+                  "description": "para 'baixar': processo, ato ou trecho que "
+                                 "identifique o prazo"},
     },
     "required": [],
 }
@@ -385,4 +426,6 @@ def radar_tool(args: dict) -> str:
                     speakable(days))
         news = "; ".join(f"{p['data_limite']}: {p['resumo']}" for p in found)
         return f"Varredura concluída, {len(found)} prazo(s) novo(s): {news}"
+    if action == "baixar":
+        return settle(str(args.get("query", "")))
     return speakable(days)
