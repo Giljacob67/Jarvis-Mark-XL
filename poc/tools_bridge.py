@@ -5,10 +5,10 @@ As actions foram escritas para o app Qt (recebem player=ui, speak=callback).
 Aqui elas rodam sem UI: um shim de logger no lugar do player, e um hook
 say() que injeta fala espontânea no pipeline (usado pelo timer ao disparar).
 
-Fase 2 — ferramentas de maior valor primeiro:
-    calendar, email_tool, web_search, notes, timer, open_app
-As demais entram por adição na _SELECTED (o schema vem de core/tools.py,
-a mesma fonte usada pelo app antigo — uma definição só).
+A lista de ferramentas, schemas e handlers vive no REGISTRY UNIFICADO
+(core/registry.py) — este módulo só faz a ponte para o Pipecat: contexto
+de ambiente (satélite/display/say), coerção de tipos p/ Groq/Cerebras,
+parâmetro de confirmação de risco alto, permissões e auditoria.
 """
 from __future__ import annotations
 
@@ -24,16 +24,8 @@ from loguru import logger
 
 from pipecat.processors.aggregators.llm_context import FunctionSchema, ToolsSchema
 
-# Ferramentas expostas nesta fase (nome → callable(parameters, ...) -> str)
-_SELECTED = ("calendar", "email_tool", "web_search", "notes", "timer", "open_app")
-
-# Ferramentas de desktop em servidor headless: se o SATÉLITE estiver
-# configurado (satellite_url no config), elas rodam por RPC na tailnet;
-# sem satélite E sem DISPLAY, saem do schema.
 import json as _json
 import os as _os
-
-_DESKTOP_ONLY = {"open_app"}
 
 
 def _satellite_cfg() -> tuple[str, str]:
@@ -46,8 +38,6 @@ def _satellite_cfg() -> tuple[str, str]:
 
 _SAT_URL, _SAT_TOKEN = _satellite_cfg()
 _HAS_DISPLAY = bool(_os.environ.get("DISPLAY") or _os.environ.get("WAYLAND_DISPLAY"))
-if not _HAS_DISPLAY and not _SAT_URL:
-    _SELECTED = tuple(t for t in _SELECTED if t not in _DESKTOP_ONLY)
 
 
 def _satellite_call(endpoint: str, payload: dict, timeout: int = 120) -> str:
@@ -95,58 +85,17 @@ def _say(text: str) -> None:
             logger.warning(f"say hook falhou: {e}")
 
 
+def _ctx() -> dict:
+    """Ambiente do processo, na forma que o registry espera."""
+    return {"ui": HeadlessUI(), "say": _say,
+            "satellite": _satellite_call if _SAT_URL else None,
+            "has_display": _HAS_DISPLAY}
+
+
 def _dispatch(name: str, args: dict) -> str:
-    """Executa a action (bloqueante) — mesma rota do main.py, sem Qt."""
-    ui = HeadlessUI()
-    # Ferramentas de memória (Fase 1) — locais, sem action externa
-    if name == "screen_look":
-        if not _SAT_URL:
-            return "Visão de tela indisponível: satélite não configurado."
-        return _satellite_call("/screen_look",
-                               {"question": args.get("question", "")})
-    if name == "open_app" and not _HAS_DISPLAY and _SAT_URL:
-        return _satellite_call("/open_app",
-                               {"app_name": args.get("app_name", "")}, timeout=30)
-    if name == "briefing":
-        from poc.briefing import generate
-        return generate(mode=args.get("mode", "medio"),
-                        question=args.get("question"))
-    if name == "radar_prazos":
-        from poc.radar import radar_tool
-        return radar_tool(args)
-    if name == "status_sistema":
-        from core.health import speakable as health_speakable
-        return health_speakable()
-    if name in ("remember", "recall", "forget", "context_summary"):
-        from memory.layered import get_memory
-        m = get_memory()
-        if name == "remember":
-            return m.remember(args.get("text", ""))
-        if name == "recall":
-            return m.recall(args.get("query", ""))
-        if name == "forget":
-            return m.forget(args.get("query", ""))
-        return m.context_summary()
-    if name == "calendar":
-        from actions.calendar_tool import calendar_tool
-        return calendar_tool(parameters=args, player=ui) or "Feito."
-    if name == "email_tool":
-        from actions.email_tool import email_tool
-        return email_tool(parameters=args, player=ui, speak=_say) or "Feito."
-    if name == "web_search":
-        from actions.web_search import web_search
-        return web_search(parameters=args, player=ui) or "Feito."
-    if name == "notes":
-        from actions.notes_tool import notes_tool
-        return notes_tool(parameters=args, player=ui, speak=_say) or "Feito."
-    if name == "timer":
-        from actions.timer_tool import timer_tool
-        return timer_tool(parameters=args, player=ui, speak=_say) or "Feito."
-    if name == "open_app":
-        from actions.open_app import open_app
-        r = open_app(parameters=args, response=None, player=ui)
-        return r or f"Abri {args.get('app_name', 'o aplicativo')}."
-    return f"Ferramenta desconhecida: {name}"
+    """Executa a ferramenta (bloqueante) — lookup no registry unificado."""
+    from core.registry import dispatch
+    return dispatch(name, args, _ctx())
 
 
 # Ferramentas lentas ganham backchannel ("Um momento.") — com moderação:
@@ -224,21 +173,19 @@ def _permission_mode() -> str:
 
 
 def build_tools() -> ToolsSchema:
-    """Schemas de core/tools.py (fonte única) → FunctionSchema com handler."""
-    from core.tools import OLLAMA_TOOLS
+    """Registry unificado → FunctionSchema com handler do Pipecat."""
+    from core.permissions import RISK_MATRIX
+    from core.registry import tools_for
 
     schemas = []
-    for t in OLLAMA_TOOLS:
-        fn = t["function"]
-        if fn["name"] not in _SELECTED:
-            continue
-        params = fn.get("parameters", {})
+    for tool in tools_for(_ctx()):
+        s = tool.schema()
         # Groq valida os argumentos contra o schema ESTRITAMENTE e o Llama
         # costuma emitir números/booleanos como texto ('5', 'true') — a
         # completion inteira era rejeitada e o bot ficava mudo.  Todos os
         # parâmetros viram string no schema; as actions já coagem os tipos.
         props = {}
-        for k, v in (params.get("properties") or {}).items():
+        for k, v in s["properties"].items():
             nv = dict(v)
             if nv.get("type") in ("integer", "number", "boolean"):
                 nv["type"] = "string"
@@ -247,8 +194,7 @@ def build_tools() -> ToolsSchema:
             props[k] = nv
         # ferramentas com ações de risco alto ganham o parâmetro de
         # confirmação verbal (fluxo do core/permissions.py)
-        from core.permissions import RISK_MATRIX
-        entry = RISK_MATRIX.get(fn["name"])
+        entry = RISK_MATRIX.get(s["name"])
         if entry == "high" or (isinstance(entry, dict) and "high" in entry.values()):
             props["confirm"] = {
                 "type": "string",
@@ -256,34 +202,8 @@ def build_tools() -> ToolsSchema:
                                "verbalmente uma ação de risco alto.",
             }
         schemas.append(FunctionSchema(
-            name=fn["name"],
-            description=fn["description"],
-            properties=props,
-            required=params.get("required", []),
-            handler=_handle,
-        ))
-
-    # Ferramentas de memória (Fase 1) + briefing (Fase 2) + visão (satélite)
-    from memory.layered import MEMORY_TOOL_SCHEMAS
-    from poc.briefing import BRIEFING_TOOL_SCHEMA
-    from core.health import HEALTH_TOOL_SCHEMA
-    from poc.radar import RADAR_TOOL_SCHEMA
-    extra_schemas = [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA,
-                     RADAR_TOOL_SCHEMA, HEALTH_TOOL_SCHEMA]
-    if _SAT_URL or _HAS_DISPLAY:
-        extra_schemas.append({
-            "name": "screen_look",
-            "description": "Olha a TELA DO COMPUTADOR do usuário e responde "
-                           "('o que estou vendo?', 'me ajude com essa tela', "
-                           "'explique esse erro', 'qual o próximo passo aqui?').",
-            "properties": {"question": {"type": "string",
-                           "description": "O que o usuário quer saber da tela"}},
-            "required": [],
-        })
-    for ms in extra_schemas:
-        schemas.append(FunctionSchema(
-            name=ms["name"], description=ms["description"],
-            properties=ms["properties"], required=ms["required"],
+            name=s["name"], description=s["description"],
+            properties=props, required=s["required"],
             handler=_handle,
         ))
 
