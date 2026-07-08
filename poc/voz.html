@@ -37,12 +37,13 @@
   </style>
 </head>
 <body>
-  <h1>JARVIS v2 — TESTE DE VOZ <span style="color:#4a6a85;font-size:11px">build v4</span></h1>
+  <h1>JARVIS v2 — TESTE DE VOZ <span style="color:#4a6a85;font-size:11px">build v5</span></h1>
   <div id="orb">off</div>
   <div id="detail"></div>
   <button id="btn">Conectar</button>
   <div class="badge" id="aec"></div>
-  <div id="log">Fone de ouvido recomendado para o primeiro teste.\nCom caixas, o cancelamento de eco do navegador é ativado explicitamente.</div>
+  <div class="badge" id="vu"></div>
+  <div id="log">iPhone: confira o interruptor lateral de silêncio e o volume.\nFone de ouvido recomendado para o primeiro teste.</div>
   <div id="err"></div>
   <audio id="botaudio" autoplay playsinline></audio>
 
@@ -69,10 +70,46 @@ const orb = document.getElementById('orb');
 const log = (t) => document.getElementById('log').textContent = t;
 let pc = null;
 
+// ── iOS: a saída de áudio SÓ toca se for destravada DENTRO do gesto ─────
+// O ontrack chega depois, fora do gesto — play() lá seria bloqueado pelo
+// autoplay do Safari. Destravamos o <audio> e um AudioContext aqui.
+let actx = null;
+function unlockAudio() {
+  const a = document.getElementById('botaudio');
+  try { a.play().catch(() => {}); } catch (_) {}
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+  } catch (_) {}
+}
+
+// medidor: prova VISÍVEL de que o áudio do bot está chegando — separa
+// "não chega áudio" de "chega mas o iPhone está no silencioso"
+function vuMeter(stream) {
+  try {
+    if (!actx) return;
+    const src = actx.createMediaStreamSource(stream);
+    const an = actx.createAnalyser(); an.fftSize = 256;
+    src.connect(an);                 // analyser só observa (sem eco duplo)
+    const buf = new Uint8Array(an.frequencyBinCount);
+    const el = document.getElementById('vu');
+    let quietFrames = 0;
+    (function loop() {
+      if (!pc) { el.textContent = ''; return; }
+      an.getByteFrequencyData(buf);
+      let m = 0; for (const v of buf) if (v > m) m = v;
+      if (m > 24) { el.textContent = '🔊 áudio do JARVIS chegando'; quietFrames = 0; }
+      else if (++quietFrames > 90) el.textContent = '';
+      requestAnimationFrame(loop);
+    })();
+  } catch (_) {}
+}
+
 const conectar = async () => {
   document.getElementById('log').textContent = '⏳ toque recebido — pedindo microfone…';
   if (pc) { pc.close(); pc = null; btn.textContent = 'Conectar'; orb.className=''; orb.textContent='off'; return; }
   btn.disabled = true;
+  unlockAudio();               // AINDA no gesto do toque — antes de qualquer await
   try {
     // O ponto central deste cliente: processamento do navegador LIGADO
     // explicitamente (o cliente pré-pronto não define nada).
@@ -113,7 +150,19 @@ const conectar = async () => {
     pc.ontrack = (e) => {
       const a = document.getElementById('botaudio');
       a.srcObject = e.streams[0];
-      a.play().catch(() => {});   // iOS: garante playback pós-gesto
+      // NUNCA engolir a rejeição: se o iOS bloquear, avisa e destrava no
+      // próximo toque em qualquer lugar da tela.
+      const tryPlay = () => a.play().then(() => {
+        document.getElementById('err').textContent = '';
+      }).catch((err) => {
+        document.getElementById('err').textContent =
+          '⚠ Áudio bloqueado pelo navegador (' + err.name +
+          '). Toque em qualquer lugar da tela para liberar.';
+        document.addEventListener('touchend', tryPlay, { once: true });
+        document.addEventListener('click', tryPlay, { once: true });
+      });
+      tryPlay();
+      vuMeter(e.streams[0]);
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') { orb.className='on'; orb.textContent='ouvindo'; log('Conectado — fale naturalmente. Interrompa falando por cima.'); }
