@@ -114,6 +114,9 @@ def _dispatch(name: str, args: dict) -> str:
     if name == "radar_prazos":
         from poc.radar import radar_tool
         return radar_tool(args)
+    if name == "status_sistema":
+        from core.health import speakable as health_speakable
+        return health_speakable()
     if name in ("remember", "recall", "forget", "context_summary"):
         from memory.layered import get_memory
         m = get_memory()
@@ -263,9 +266,10 @@ def build_tools() -> ToolsSchema:
     # Ferramentas de memória (Fase 1) + briefing (Fase 2) + visão (satélite)
     from memory.layered import MEMORY_TOOL_SCHEMAS
     from poc.briefing import BRIEFING_TOOL_SCHEMA
+    from core.health import HEALTH_TOOL_SCHEMA
     from poc.radar import RADAR_TOOL_SCHEMA
     extra_schemas = [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA,
-                     RADAR_TOOL_SCHEMA]
+                     RADAR_TOOL_SCHEMA, HEALTH_TOOL_SCHEMA]
     if _SAT_URL or _HAS_DISPLAY:
         extra_schemas.append({
             "name": "screen_look",

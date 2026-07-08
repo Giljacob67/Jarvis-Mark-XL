@@ -119,8 +119,11 @@ class TelegramService:
     # ── entrada ──────────────────────────────────────────────────────────
     def _loop(self):
         import requests
+
+        from core.health import beat, fail
         while True:
             try:
+                beat("telegram")
                 resp = requests.get(f"{self._api}/getUpdates",
                                     params={"offset": self._offset, "timeout": 50},
                                     timeout=60).json()
@@ -134,6 +137,7 @@ class TelegramService:
                 time.sleep(5)
             except Exception as e:
                 logger.error(f"tg poll: {e}")
+                fail("telegram", str(e))
                 time.sleep(5)
 
     def _handle(self, upd: dict):
@@ -230,11 +234,13 @@ class ProactiveService:
     def _loop(self):
         from datetime import datetime
 
+        from core.health import beat, fail
         from core.proactive import in_quiet_hours, time_slot_due
         time.sleep(20)
         while True:
             try:
                 cfg = _cfg()
+                beat("proactive")   # antes dos gates: quieto ≠ morto
                 if not cfg.get("proactive_enabled", True):
                     time.sleep(60); continue
                 now = datetime.now()
@@ -275,6 +281,7 @@ class ProactiveService:
                         self._state["radar_last_scan"] = time.time()
                         self._save()
                         from poc.radar import scan
+                        beat("radar")
                         for p in scan():
                             self._announce(
                                 f"Senhor, intimação nova no radar: {p['resumo']} "
@@ -302,6 +309,7 @@ class ProactiveService:
                             break
             except Exception as e:
                 logger.error(f"proactive tick: {e}")
+                fail("proactive", str(e))
             time.sleep(30)
 
 

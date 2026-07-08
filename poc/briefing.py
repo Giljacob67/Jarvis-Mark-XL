@@ -61,6 +61,14 @@ def gather_facts() -> dict:
     """Coleta bruta de todas as fontes (cada uma falha isolada)."""
     facts: dict[str, str] = {}
     try:
+        from core.health import stale_alerts
+        alerts = stale_alerts()
+        if alerts:   # o vigia parado é a notícia mais urgente do dia
+            facts["ALERTA"] = ("; ".join(alerts) +
+                               " — prazos podem estar passando sem detecção!")
+    except Exception:
+        pass
+    try:
         from poc.radar import pending, speakable
         if pending(10):
             facts["prazos"] = speakable(10)   # vem primeiro: prioridade máxima
