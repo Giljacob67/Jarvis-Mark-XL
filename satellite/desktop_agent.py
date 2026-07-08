@@ -76,6 +76,12 @@ async def open_app_ep(req: Request, x_jarvis_token: str | None = Header(None)):
 
 def _screenshot(path: str) -> str | None:
     """Tenta capturar a tela; retorna None se ok, ou a mensagem de erro."""
+    # Serviço --user pode nascer sem o ambiente gráfico — garante os
+    # mínimos para gnome-screenshot/portal funcionarem.
+    os.environ.setdefault("DISPLAY", ":0")
+    os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS",
+                          f"unix:path=/run/user/{os.getuid()}/bus")
     attempts = [
         ["gnome-screenshot", "-f", path],
         ["gdbus", "call", "--session", "--dest", "org.gnome.Shell",

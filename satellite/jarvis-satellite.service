@@ -5,10 +5,15 @@ After=graphical-session.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Jarvis-Mark-XL
+# Importa DISPLAY/WAYLAND_DISPLAY/DBUS da sessão gráfica — sem isso o
+# gnome-screenshot não sabe qual tela capturar (serviço --user nasce
+# sem o ambiente gráfico).
+ExecStartPre=/usr/bin/systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XAUTHORITY
 ExecStart=%h/Jarvis-Mark-XL/.venv-pipecat/bin/python satellite/desktop_agent.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
 
 [Install]
 WantedBy=default.target
