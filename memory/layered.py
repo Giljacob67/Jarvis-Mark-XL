@@ -9,8 +9,11 @@ JARVIS — Memória em três camadas.
   OPERACIONAL  o agora: estado de presença, últimas ações, pendências.
                Vive em RAM (reconstruída a cada boot — é efêmera por design).
 
-Busca: por palavras com peso de recência (Fase 1). A troca por busca
-semântica local (sqlite-vec) na Fase 2 mantém esta mesma interface.
+Busca (Fase 2): HÍBRIDA — palavras + recência (precisa) combinada com
+similaridade semântica local (memory/semantic.py: fastembed + sqlite-vec),
+então "aquela execução de Balneário" acha "execução fiscal de Balneário
+Arroio do Silva" sem termo exato. Sem as dependências instaladas, degrada
+sozinha para a busca por palavras da Fase 1.
 
 Política de privacidade e esquecimento:
   - "esqueça X" marca tombstone — o item some de todas as buscas;
@@ -49,12 +52,30 @@ _STOP = set(_norm("que com para uma dos das por sobre isso essa este aquele "
 
 
 class LayeredMemory:
-    def __init__(self, episodic_path: Path | None = None):
+    def __init__(self, episodic_path: Path | None = None, embed_fn=None):
         self._path = episodic_path or EPISODIC_PATH
         self._lock = threading.Lock()
         # operacional (efêmera)
         self._op_state: dict[str, str] = {}
         self._op_actions: list[tuple[float, str]] = []
+        # semântica (acessório lazy; None = indisponível/desligada)
+        self._embed_fn = embed_fn
+        self._sem = None
+        self._sem_tried = False
+
+    def _semantic(self):
+        if not self._sem_tried:
+            self._sem_tried = True
+            try:
+                from memory.semantic import open_index
+                db = self._path.parent / (self._path.stem + "_vec.db")
+                self._sem = open_index(db, self._embed_fn)
+                if self._sem:
+                    self._sem.sync(self._load())   # backfill do acervo
+            except Exception as e:
+                log.warning("índice semântico falhou (%s) — só palavras", e)
+                self._sem = None
+        return self._sem
 
     # ── PERFIL ───────────────────────────────────────────────────────────
     def profile_summary(self, max_chars: int = 600) -> str:
@@ -97,25 +118,48 @@ class LayeredMemory:
         text = (text or "").strip()
         if not text:
             return "Nada para lembrar."
-        self._append({"ts": time.time(), "kind": kind, "text": text,
+        ts = time.time()
+        self._append({"ts": ts, "kind": kind, "text": text,
                       "date": time.strftime("%Y-%m-%d %H:%M")})
         log.info("episódica += [%s] %s", kind, text[:60])
+        sem = self._semantic()
+        if sem:
+            try:
+                sem.index(ts, text)
+            except Exception as e:
+                log.warning("indexação semântica falhou: %s", e)
         return f"Memorizado: {text[:80]}"
 
+    # similaridade mínima para um resultado PURAMENTE semântico entrar
+    # (abaixo disso o vizinho mais próximo é só o menos distante do acervo).
+    # Calibrado com o MiniLM multilíngue em pt-BR: relevantes ≈0.40-0.45,
+    # mesmo domínio mas outro assunto ≈0.25-0.30, off-topic <0.10.
+    _SEM_FLOOR = 0.35
+
     def recall(self, query: str, limit: int = 4) -> str:
-        """'O que você sabe sobre X' — busca por palavras + recência."""
+        """'O que você sabe sobre X' — híbrida: palavras + semântica."""
         q = [t for t in _norm(query) if t not in _STOP]
         if not q:
             return "Preciso de um termo para buscar."
         now = time.time()
+        alive = self._load()
+        sims: dict[float, float] = {}
+        sem = self._semantic()
+        if sem:
+            try:
+                sims = {ts: s for s, ts in sem.search(query, limit=limit * 3)}
+            except Exception as e:
+                log.warning("busca semântica falhou: %s", e)
         scored = []
-        for e in self._load():
+        for e in alive:
             toks = set(_norm(e.get("text", "")))
             hits = sum(1 for t in q if t in toks)
-            if not hits:
+            sim = sims.get(e.get("ts"), 0.0)
+            if not hits and sim < self._SEM_FLOOR:
                 continue
             age_days = (now - e.get("ts", now)) / 86400
-            score = hits + max(0.0, 1.0 - age_days / 30) * 0.5   # recência leve
+            score = (hits + sim * 2.0 +
+                     max(0.0, 1.0 - age_days / 30) * 0.5)   # recência leve
             scored.append((score, e))
         if not scored:
             return f"Não tenho nada registrado sobre '{query}'."
@@ -133,6 +177,12 @@ class LayeredMemory:
         for e in victims:
             self._append({"kind": "tombstone", "target_ts": e["ts"],
                           "ts": time.time()})
+        sem = self._semantic()
+        if sem and victims:
+            try:      # esquecido de verdade: some também do índice vetorial
+                sem.remove([e["ts"] for e in victims])
+            except Exception as e:
+                log.warning("remoção semântica falhou: %s", e)
         n = len(victims)
         log.info("esquecidos %d episódios (query=%s)", n, query)
         return (f"Esquecido: {n} registro{'s' if n != 1 else ''} sobre "
@@ -145,6 +195,12 @@ class LayeredMemory:
             with open(self._path, "w", encoding="utf-8") as f:
                 for e in alive:
                     f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        sem = self._semantic()
+        if sem:
+            try:
+                sem.prune({e["ts"] for e in alive})
+            except Exception as e:
+                log.warning("prune semântico falhou: %s", e)
         return len(alive)
 
     # ── OPERACIONAL ──────────────────────────────────────────────────────
