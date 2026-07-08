@@ -5,9 +5,10 @@ Serviço leve que roda NA MÁQUINA do usuário (sessão gráfica) e expõe, só
 para a tailnet, as capacidades que o cérebro no VPS não tem:
 
   POST /open_app     {app_name}            → abre app/site no desktop
-  POST /screen_look  {question}            → screenshot + VISÃO LOCAL
-                                             (Ollama gemma4; fallback Groq
-                                             llama-4-scout) → descrição
+  POST /screen_look  {question}            → screenshot + visão Groq
+                                             llama-4-scout (~4s); local
+                                             Ollama gemma4 é fallback, ou
+                                             primário c/ vision_prefer_local
   GET  /health                             → estado
 
 Segurança:
@@ -83,6 +84,9 @@ def _screenshot(path: str) -> str | None:
     os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS",
                           f"unix:path=/run/user/{os.getuid()}/bus")
     attempts = [
+        # GNOME/Wayland: portal com permissão pré-concedida (ver portal_shot.py);
+        # gi só existe no Python do sistema, por isso o subprocesso.
+        ["/usr/bin/python3", str(Path(__file__).parent / "portal_shot.py"), path],
         ["gnome-screenshot", "-f", path],
         ["gdbus", "call", "--session", "--dest", "org.gnome.Shell",
          "--object-path", "/org/gnome/Shell/Screenshot",
@@ -107,7 +111,12 @@ def _screenshot(path: str) -> str | None:
 
 
 def _vision_local(image_b64: str, question: str) -> str | None:
-    """Ollama local (gemma4 multimodal) — visão sem sair da máquina."""
+    """Ollama local (gemma4 multimodal) — visão sem sair da máquina.
+
+    Medido em 2026-07-08: ~150s por resposta em CPU mesmo com o modelo
+    quente — inviável em conversa. Por isso é fallback; vira primário só
+    com vision_prefer_local=true (privacidade acima da velocidade).
+    """
     try:
         import requests
         model = _cfg().get("vision_local_model", "gemma4")
@@ -117,7 +126,7 @@ def _vision_local(image_b64: str, question: str) -> str | None:
                        "português brasileiro, direto e útil (3-6 frases). "
                        f"Pergunta: {question}"),
             "images": [image_b64],
-        }, timeout=90)
+        }, timeout=240)
         if r.status_code == 200:
             return (r.json().get("response") or "").strip() or None
     except Exception:
@@ -165,14 +174,19 @@ async def screen_look_ep(req: Request, x_jarvis_token: str | None = Header(None)
         if err:
             return {"result": f"Não consegui capturar a tela ({err})."}
         b64 = base64.b64encode(Path(path).read_bytes()).decode("ascii")
-        answer = _vision_local(b64, question)
-        engine = "visão local (Ollama)"
-        if not answer:
-            answer = _vision_groq(b64, question)
-            engine = "visão em nuvem (Groq)"
+        engines = [(_vision_groq, "visão em nuvem (Groq)"),
+                   (_vision_local, "visão local (Ollama)")]
+        if _cfg().get("vision_prefer_local", False):
+            engines.reverse()
+        answer = engine = None
+        for fn, name in engines:
+            answer = fn(b64, question)
+            if answer:
+                engine = name
+                break
         if not answer:
             return {"result": "Capturei a tela, mas nenhum motor de visão "
-                              "respondeu (Ollama local e Groq falharam)."}
+                              "respondeu (Groq e Ollama local falharam)."}
         return {"result": answer, "engine": engine}
     finally:
         Path(path).unlink(missing_ok=True)
