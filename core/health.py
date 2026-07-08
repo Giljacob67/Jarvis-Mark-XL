@@ -151,9 +151,11 @@ def speakable() -> str:
     """'Jarvis, como você está?' — diagnóstico em uma resposta."""
     r = report()
     parts = []
-    dead = [n for n, s in r["services"].items() if not s["alive"]]
     seen = [n for n, s in r["services"].items()
             if s["last_beat"] != "nunca"]
+    # mesma regra do stale_alerts: quem nunca bateu não é falha (primeiro
+    # ciclo ainda por vir), quem bateu e sumiu é
+    dead = [n for n in seen if not r["services"][n]["alive"]]
     if not seen:
         parts.append("serviços 24/7 não rodam nesta máquina (são do VPS)")
     elif dead:
@@ -161,8 +163,13 @@ def speakable() -> str:
             f"{n} (último sinal {r['services'][n]['last_beat']})"
             for n in dead))
     else:
-        parts.append("todos os serviços ativos (" + ", ".join(
-            f"{n} {r['services'][n]['last_beat']}" for n in seen) + ")")
+        alive_txt = ", ".join(f"{n} {r['services'][n]['last_beat']}"
+                              for n in seen)
+        waiting = [n for n in r["services"] if n not in seen]
+        if waiting:
+            alive_txt += ("; aguardando primeiro ciclo: " +
+                          ", ".join(waiting))
+        parts.append("serviços ativos (" + alive_txt + ")")
     errs = [f"{n}: {s['last_error']}" for n, s in r["services"].items()
             if s.get("last_error")]
     if errs:
