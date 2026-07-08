@@ -66,8 +66,14 @@ Para nova máquina: copiar via scp da tailnet (desktop ou VPS `/opt/jarvis`).
 
 ## Roadmap
 
-3b. Satélite de desktop (RPC via tailnet p/ open_app etc.) · migrar
-Telegram+proatividade p/ v2 · aposentar loop de voz Qt
-4. **Radar de prazos jurídico**: e-mails de tribunal (Projudi/PJe) → prazo
-→ Google Calendar + briefing — maior valor para o usuário
-5. Higiene: rotacionar chaves Cerebras e Telegram (passaram por chat)
+Entregues (jul/2026): satélite de desktop (open_app + screen_look via
+portal Wayland) · **Radar de Prazos** (poc/radar.py — e-mail jus.br →
+data-limite determinística CPC → Calendar + briefing; baixa por voz) ·
+memória semântica (memory/semantic.py, fastembed+sqlite-vec, recall
+híbrido) · observabilidade (core/health.py, tool status_sistema) ·
+**registry unificado** (core/registry.py — ferramenta nova = 1 entrada
+em TOOLS + risco na RISK_MATRIX; tools_bridge é só ponte Pipecat).
+
+Pendentes: aposentar loop de voz Qt · modo offline · wake word (só se
+voltar o "sempre ouvindo") · higiene: rotacionar token Telegram
+(Cerebras já rotacionada em 2026-07-08).
