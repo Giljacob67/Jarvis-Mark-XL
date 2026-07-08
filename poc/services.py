@@ -266,6 +266,21 @@ class ProactiveService:
                                 f"é de {top[0][0]}: {top[0][1]}.")
                         break
 
+                # radar de prazos: varre o Gmail a cada radar_interval_min
+                # e anuncia NA HORA qualquer intimação nova com prazo
+                if cfg.get("radar_enabled", True):
+                    interval = int(cfg.get("radar_interval_min", 60))
+                    last = self._state.get("radar_last_scan", 0)
+                    if time.time() - last >= interval * 60:
+                        self._state["radar_last_scan"] = time.time()
+                        self._save()
+                        from poc.radar import scan
+                        for p in scan():
+                            self._announce(
+                                f"Senhor, intimação nova no radar: {p['resumo']} "
+                                f"Prazo estimado: {p['data_limite']} — evento "
+                                f"criado na agenda; confirme no sistema.")
+
                 # lembretes de compromisso (60/15 min, dedupe persistente)
                 from actions.calendar_tool import agenda_upcoming
                 reminded = self._state.setdefault("reminded", {})

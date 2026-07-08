@@ -61,6 +61,12 @@ def gather_facts() -> dict:
     """Coleta bruta de todas as fontes (cada uma falha isolada)."""
     facts: dict[str, str] = {}
     try:
+        from poc.radar import pending, speakable
+        if pending(10):
+            facts["prazos"] = speakable(10)   # vem primeiro: prioridade máxima
+    except Exception as e:
+        logger.debug(f"radar indisponível no briefing: {e}")
+    try:
         from actions.calendar_tool import calendar_tool
         facts["agenda"] = calendar_tool(parameters={"action": "list", "days": 2})
     except Exception as e:

@@ -111,6 +111,9 @@ def _dispatch(name: str, args: dict) -> str:
         from poc.briefing import generate
         return generate(mode=args.get("mode", "medio"),
                         question=args.get("question"))
+    if name == "radar_prazos":
+        from poc.radar import radar_tool
+        return radar_tool(args)
     if name in ("remember", "recall", "forget", "context_summary"):
         from memory.layered import get_memory
         m = get_memory()
@@ -145,7 +148,7 @@ def _dispatch(name: str, args: dict) -> str:
 
 # Ferramentas lentas ganham backchannel ("Um momento.") — com moderação:
 # só onde a latência real justifica, e frase curta única.
-_SLOW_TOOLS = {"web_search", "email_tool"}
+_SLOW_TOOLS = {"web_search", "email_tool", "radar_prazos"}
 _BACKCHANNEL = ("Um momento.", "Já verifico.", "Verificando.")
 _bc_i = 0
 
@@ -260,7 +263,9 @@ def build_tools() -> ToolsSchema:
     # Ferramentas de memória (Fase 1) + briefing (Fase 2) + visão (satélite)
     from memory.layered import MEMORY_TOOL_SCHEMAS
     from poc.briefing import BRIEFING_TOOL_SCHEMA
-    extra_schemas = [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA]
+    from poc.radar import RADAR_TOOL_SCHEMA
+    extra_schemas = [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA,
+                     RADAR_TOOL_SCHEMA]
     if _SAT_URL or _HAS_DISPLAY:
         extra_schemas.append({
             "name": "screen_look",

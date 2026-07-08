@@ -47,6 +47,8 @@ RISK_MATRIX: dict[str, str | dict[str, str]] = {
     "timer":           {"list": "low", "*": "medium"},
     # memória (Fase 1)
     "briefing":        "low",
+    # radar de prazos (Fase 4): scan lê Gmail e cria evento no Calendar
+    "radar_prazos":    {"list": "low", "scan": "medium", "*": "low"},
     "screen_look":     "medium",   # privacidade: nunca 'low'; modo privado no satélite
     "remember":        "medium",
     "recall":          "low",
