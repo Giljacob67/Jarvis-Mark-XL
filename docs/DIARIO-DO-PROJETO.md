@@ -152,8 +152,9 @@ reunião) — no teste ele trocou DE VERDADE no meio da conversa.
 - [x] Radar de prazos jurídico (Fase 4) — aguardando 1ª intimação real
 - [ ] Voltar TTS p/ ElevenLabs quando a cota renovar (09/jul 20:54) —
       `tts_provider: "elevenlabs"` nas duas máquinas
-- [ ] BUG: data channel do HUD não abre (SCTP não estabelece; só a bolinha
-      de estados — áudio não é afetado). Curioso: funcionou 1x em 09/jul.
+- [x] BUG: data channel do HUD não abre em alguns clientes — mantido como
+      caminho rápido, mas `poc/voz.html` build v6 agora consulta
+      `/api/jarvis/hud` como fallback HTTP e mostra estado, tarefa e logs.
 - [ ] Poda de histórico na v2 (contexto 8k da Cerebras em sessões longas)
 - [ ] Merge `pipecat-poc` → `main` (a v2 já absorveu tudo; falta o merge)
 - [ ] Modo offline "degradado honesto" · wake word (só se voltar o

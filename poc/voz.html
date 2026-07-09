@@ -34,12 +34,27 @@
     #err { font-size: 13px; color: #ff6b7a; max-width: 480px; text-align: center;
            white-space: pre-line; word-break: break-word; }
     .badge { font-size: 11px; color: #7CFC00; }
+    .hud { width: min(560px, 100%); border: 1px solid #12364d; border-radius: 12px;
+           background: #020b12cc; padding: 12px; display: grid; gap: 8px; }
+    .hud div { display: flex; justify-content: space-between; gap: 12px;
+               font-size: 12px; color: #6d8aa5; }
+    .hud strong { color: #cfe9ff; font-weight: 600; text-align: right; }
+    #hudlog { max-height: 110px; overflow: auto; background: #01070c; color: #6d8aa5;
+              border: 1px solid #0d2638; border-radius: 8px; padding: 8px;
+              font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+              white-space: pre-wrap; }
   </style>
 </head>
 <body>
-  <h1>JARVIS v2 — TESTE DE VOZ <span style="color:#4a6a85;font-size:11px">build v5</span></h1>
+  <h1>JARVIS v2 — TESTE DE VOZ <span style="color:#4a6a85;font-size:11px">build v6</span></h1>
   <div id="orb">off</div>
   <div id="detail"></div>
+  <div class="hud">
+    <div><span>Estado</span><strong id="hudstate">desconectado</strong></div>
+    <div><span>Tarefa</span><strong id="task">—</strong></div>
+    <div><span>HUD</span><strong id="hudlink">aguardando</strong></div>
+    <pre id="hudlog"></pre>
+  </div>
   <button id="btn">Conectar</button>
   <div class="badge" id="aec"></div>
   <div class="badge" id="vu"></div>
@@ -69,6 +84,63 @@ const btn = document.getElementById('btn');
 const orb = document.getElementById('orb');
 const log = (t) => document.getElementById('log').textContent = t;
 let pc = null;
+let hudTimer = null;
+let dcPingTimer = null;
+
+const STATE_PT = {
+  idle: 'em espera', listening: 'ouvindo', thinking: 'pensando',
+  speaking: 'falando', executing_tool: 'executando',
+  observing_screen: 'observando tela', proactive_waiting: 'de prontidão',
+  error_recovery: 'recuperando',
+};
+
+function applyState(state, detail, source) {
+  orb.className = state || 'idle';
+  orb.textContent = STATE_PT[state] || state || 'em espera';
+  document.getElementById('detail').textContent =
+    state === 'executing_tool' && detail ? `🔧 ${detail}` : (detail || '');
+  document.getElementById('hudstate').textContent = STATE_PT[state] || state || '—';
+  document.getElementById('task').textContent =
+    ['executing_tool', 'observing_screen', 'thinking'].includes(state) && detail ? detail : '—';
+  if (source) document.getElementById('hudlink').textContent = source;
+}
+
+function renderHudLogs(logs) {
+  if (!Array.isArray(logs)) return;
+  const lines = logs.slice(-8).map((l) => {
+    const ts = typeof l.ts === 'number'
+      ? new Date(l.ts * 1000).toLocaleTimeString()
+      : String(l.ts || '').slice(-8);
+    return `${ts} ${l.type || 'log'}: ${l.message || ''}`;
+  });
+  document.getElementById('hudlog').textContent = lines.join('\n');
+}
+
+async function pollHud() {
+  try {
+    const resp = await fetch('/api/jarvis/hud', { cache: 'no-store' });
+    if (!resp.ok) throw new Error(resp.status);
+    const hud = await resp.json();
+    const p = hud.presence || {};
+    applyState(p.state, p.detail || hud.current_task || '', 'HTTP fallback');
+    renderHudLogs(hud.logs || []);
+  } catch (_) {
+    document.getElementById('hudlink').textContent = 'sem HUD HTTP';
+  }
+}
+
+function startHudPolling() {
+  stopHudPolling();
+  pollHud();
+  hudTimer = setInterval(pollHud, 1500);
+}
+
+function stopHudPolling() {
+  if (hudTimer) clearInterval(hudTimer);
+  hudTimer = null;
+  if (dcPingTimer) clearInterval(dcPingTimer);
+  dcPingTimer = null;
+}
 
 // ── iOS: a saída de áudio SÓ toca se for destravada DENTRO do gesto ─────
 // O ontrack chega depois, fora do gesto — play() lá seria bloqueado pelo
@@ -107,7 +179,13 @@ function vuMeter(stream) {
 
 const conectar = async () => {
   document.getElementById('log').textContent = '⏳ toque recebido — pedindo microfone…';
-  if (pc) { pc.close(); pc = null; btn.textContent = 'Conectar'; orb.className=''; orb.textContent='off'; return; }
+  if (pc) {
+    stopHudPolling();
+    pc.close(); pc = null; btn.textContent = 'Conectar';
+    orb.className=''; orb.textContent='off';
+    applyState('idle', '', 'desconectado');
+    return;
+  }
   btn.disabled = true;
   unlockAudio();               // AINDA no gesto do toque — antes de qualquer await
   try {
@@ -131,21 +209,24 @@ const conectar = async () => {
     pc.addTransceiver('audio', { direction: 'recvonly' });
 
     // ── HUD ao vivo: Presence Engine do servidor → data channel ──────────
-    const STATE_PT = {
-      idle: 'em espera', listening: 'ouvindo', thinking: 'pensando',
-      speaking: 'falando', executing_tool: 'executando',
-      observing_screen: 'observando tela', proactive_waiting: 'de prontidão',
-      error_recovery: 'recuperando',
-    };
     const dc = pc.createDataChannel('jarvis');
+    dc.onopen = () => {
+      document.getElementById('hudlink').textContent = 'data channel';
+      dcPingTimer = setInterval(() => {
+        try { dc.send('ping'); } catch (_) {}
+      }, 1000);
+    };
+    dc.onerror = () => { document.getElementById('hudlink').textContent = 'fallback HTTP'; };
+    dc.onclose = () => { document.getElementById('hudlink').textContent = 'fallback HTTP'; };
     dc.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
       if (m.type !== 'jarvis-state') return;      // ignora outros protocolos
-      orb.className = m.state;
-      orb.textContent = STATE_PT[m.state] || m.state;
-      document.getElementById('detail').textContent =
-        m.state === 'executing_tool' && m.detail ? `🔧 ${m.detail}` :
-        (m.detail || '');
+      applyState(m.state, m.detail || '', 'data channel');
+      renderHudLogs([{
+        ts: Date.now() / 1000,
+        type: 'presence',
+        message: `${m.state}${m.detail ? ' — ' + m.detail : ''}`,
+      }]);
     };
     pc.ontrack = (e) => {
       const a = document.getElementById('botaudio');
@@ -165,8 +246,14 @@ const conectar = async () => {
       vuMeter(e.streams[0]);
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') { orb.className='on'; orb.textContent='ouvindo'; log('Conectado — fale naturalmente. Interrompa falando por cima.'); }
-      if (['failed','disconnected','closed'].includes(pc.connectionState)) { orb.className=''; orb.textContent='off'; }
+      if (pc.connectionState === 'connected') {
+        orb.className='on'; orb.textContent='ouvindo';
+        log('Conectado — fale naturalmente. Interrompa falando por cima.');
+        startHudPolling();
+      }
+      if (['failed','disconnected','closed'].includes(pc.connectionState)) {
+        stopHudPolling(); orb.className=''; orb.textContent='off';
+      }
     };
 
     log('Criando oferta WebRTC…');
@@ -211,7 +298,7 @@ const conectar = async () => {
     document.getElementById('err').textContent =
       '⚠ ' + (e.name ? e.name + ': ' : '') + e.message;
     log('Falhou — leia o erro acima e me mande.');
-    if (pc) { pc.close(); pc = null; }
+    if (pc) { stopHudPolling(); pc.close(); pc = null; }
   } finally {
     btn.disabled = false;
   }
