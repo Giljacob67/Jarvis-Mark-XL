@@ -21,6 +21,7 @@ Auditoria: memory/audit_log.jsonl — o que foi pedido, decisão, resultado.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -32,6 +33,10 @@ log = get_logger("permissions")
 AUDIT_PATH = Path(__file__).resolve().parent.parent / "memory" / "audit_log.jsonl"
 
 _CONFIRM_WORDS = {"sim", "yes", "true", "confirmo", "confirmado", "pode", "1"}
+_SENSITIVE_ARG_RE = re.compile(
+    r"(api[_-]?key|token|secret|senha|password|pass|authorization|bearer|credential)",
+    re.I,
+)
 
 # Matriz de risco. Chave: ferramenta; valor: risco fixo (str) OU dict
 # ação→risco com "*" como padrão da ferramenta.
@@ -113,15 +118,26 @@ def confirmation_request(tool: str, args: dict | None) -> str:
                        if k not in ("confirm",))
     return (
         f"CONFIRMAÇÃO NECESSÁRIA: a ação '{tool}' ({resumo}) é de risco alto. "
-        "Descreva ao usuário em uma frase o que será feito e pergunte se "
-        "confirma. SOMENTE se ele confirmar verbalmente, chame novamente a "
-        "mesma ferramenta com os mesmos parâmetros MAIS confirm='sim'. "
-        "Se ele negar, não chame e diga que foi cancelado."
+        "Fale ao usuário de forma natural e curta: o que será feito + "
+        "'confirma?'. Não execute ainda. SOMENTE se ele confirmar verbalmente, "
+        "chame novamente a mesma ferramenta com os mesmos parâmetros MAIS "
+        "confirm='sim'. Se ele negar, não chame e diga que foi cancelado."
     )
 
 
 # ── auditoria ────────────────────────────────────────────────────────────
 _audit_lock = threading.Lock()
+
+
+def _safe_args(args: dict | None) -> dict:
+    """Cópia curta e segura para auditoria: nunca grava segredos em claro."""
+    out = {}
+    for key, value in (args or {}).items():
+        if _SENSITIVE_ARG_RE.search(str(key)):
+            out[key] = "[REDACTED]"
+        else:
+            out[key] = str(value)[:120]
+    return out
 
 
 def audit(tool: str, args: dict | None, decision: str, result: str = "") -> None:
@@ -131,7 +147,7 @@ def audit(tool: str, args: dict | None, decision: str, result: str = "") -> None
         "tool":     tool,
         "risk":     risk_of(tool, args),
         "decision": decision,
-        "args":     {k: str(v)[:120] for k, v in (args or {}).items()},
+        "args":     _safe_args(args),
         "result":   str(result)[:300],
     }
     try:

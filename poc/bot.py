@@ -56,6 +56,29 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 CFG = json.loads((BASE_DIR / "config" / "api_keys.json").read_text(encoding="utf-8"))
 
 
+def install_hud_routes() -> None:
+    """Rotas HTTP do HUD.
+
+    O data channel WebRTC é o caminho rápido, mas em iPhone/Tailscale/SCTP ele
+    pode não abrir. Esta rota dá ao cliente um fallback estável via HTTP.
+    """
+    try:
+        from fastapi.responses import JSONResponse
+        from pipecat.runner.run import app
+    except Exception as e:
+        logger.warning(f"HUD HTTP indisponível: {e}")
+        return
+    if getattr(app.state, "jarvis_hud_routes_installed", False):
+        return
+
+    @app.get("/api/jarvis/hud")
+    async def jarvis_hud():
+        from core.hud import hud_snapshot
+        return JSONResponse(hud_snapshot())
+
+    app.state.jarvis_hud_routes_installed = True
+
+
 class PresenceObserver(BaseObserver):
     """Mapeia os frames do pipeline → estados do Presence Engine.
 
@@ -199,6 +222,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     presence = get_presence()
 
     def _push_state(state, detail: str) -> None:
+        try:
+            from memory.layered import get_memory
+            get_memory().op_set("presence", state.value)
+            if detail:
+                get_memory().op_set("task", detail)
+        except Exception:
+            pass
         msg = OutputTransportMessageUrgentFrame(
             message={"type": "jarvis-state", "state": state.value,
                      "detail": detail}
@@ -248,4 +278,5 @@ if __name__ == "__main__":
 
     from pipecat.runner.run import main
 
+    install_hud_routes()
     main()

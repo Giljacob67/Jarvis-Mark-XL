@@ -7,8 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.hud import hud_snapshot
+from core.permissions import _safe_args, confirmation_request, decide, is_confirmed, risk_of
 from core.presence import PresenceEngine, PresenceState
-from core.permissions import decide, risk_of, is_confirmed, confirmation_request
 from memory.layered import LayeredMemory
 
 
@@ -85,6 +86,12 @@ def test_confirmation_parsing_and_request_text():
     assert "confirm='sim'" in msg and "risco alto" in msg
 
 
+def test_audit_args_redact_secrets():
+    args = _safe_args({"telegram_token": "abc123", "query": "status"})
+    assert args["telegram_token"] == "[REDACTED]"
+    assert args["query"] == "status"
+
+
 # ── Memória em camadas ───────────────────────────────────────────────────
 
 def _mem(tmp_path):
@@ -124,3 +131,20 @@ def test_memory_operational_and_context(tmp_path):
 
 def test_memory_empty_context(tmp_path):
     assert "Sem contexto" in _mem(tmp_path).context_summary()
+
+
+# ── HUD ──────────────────────────────────────────────────────────────────
+
+def test_hud_snapshot_exposes_presence_task():
+    p = PresenceEngine()
+    p.executing("email_tool")
+    import core.presence as presence_mod
+    old = presence_mod._engine
+    presence_mod._engine = p
+    try:
+        snap = hud_snapshot()
+    finally:
+        presence_mod._engine = old
+    assert snap["presence"]["state"] == "executing_tool"
+    assert snap["current_task"] == "email_tool"
+    assert any("email_tool" in item["message"] for item in snap["logs"])
