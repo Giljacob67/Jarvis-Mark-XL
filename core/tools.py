@@ -116,7 +116,8 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {
                 "angle": {"type": "STRING", "description": "'screen' or 'camera'. Default: 'screen'"},
-                "text":  {"type": "STRING", "description": "The question about the captured image"}
+                "text":  {"type": "STRING", "description": "The question about the captured image"},
+                "mode":  {"type": "STRING", "description": "'describe' (default) analyses the capture; 'diff' compares it against the previously cached screen and reports only what changed"}
             },
             "required": ["text"]
         }

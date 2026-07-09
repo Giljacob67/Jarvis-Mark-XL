@@ -174,6 +174,23 @@ def _call_vision(image_bytes: bytes, mime: str, user_text: str) -> str:
     return analyze_image(image_bytes, user_text, mime=mime)
 
 
+def _describe_diff(current_desc: str, last_desc: str) -> str:
+    """Summarise only what CHANGED between the previous and current screen."""
+    from core.llm_client import call_llm_text
+
+    prompt = (
+        "Abaixo estao a descricao ANTERIOR e a descricao ATUAL da tela do usuario. "
+        "Liste APENAS o que MUDOU entre elas, de forma objetiva e resumida em "
+        "portugues. Se nada mudou, responda 'Nenhuma mudanca detectada.'."
+    )
+    text = f"ANTERIOR:\n{last_desc}\n\nATUAL:\n{current_desc}"
+    try:
+        out = call_llm_text(text, system=prompt, timeout=30).strip()
+        return out or current_desc
+    except Exception as e:
+        return f"Erro ao comparar telas: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -194,6 +211,7 @@ def screen_process(
     params    = parameters or {}
     user_text = (params.get("text") or params.get("user_text") or "").strip()
     angle     = params.get("angle", "screen").lower().strip()
+    mode      = (params.get("mode") or "describe").lower().strip()
 
     if not user_text:
         user_text = "What do you see? Describe briefly."
@@ -219,9 +237,21 @@ def screen_process(
     analysis = _call_vision(image_bytes, mime, user_text)
     print(f"[Vision] 💬 {analysis[:120]}")
 
+    # Continuous vision: compare against the previously cached screen.
+    from memory.screen_cache import get_last, save
+    last_desc, _ = get_last()
+    if mode == "diff" and last_desc:
+        result = _describe_diff(analysis, last_desc)
+        save(analysis)
+        if player:
+            player.write_log(f"Jarvis: {result}")
+        if speak and result:
+            speak(result)
+        return result
+
+    save(analysis)
     if player:
         player.write_log(f"Jarvis: {analysis}")
-
     if speak and analysis:
         speak(analysis)
 
