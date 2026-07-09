@@ -217,6 +217,37 @@ def _gmail_query(query: str, limit: int) -> tuple[int, list[tuple[str, str]], li
     return total, top, [m["id"] for m in msgs]
 
 
+def unread_details(limit: int = 5) -> list[dict]:
+    """Não lidos COM conteúdo (para a proatividade narrar, não só citar).
+
+    [{sender, subject, snippet}] — snippet é o resumo do próprio Gmail
+    (~200 chars do corpo). Vazio se Gmail API indisponível: o boletim
+    narrado exige conteúdo; sem ele o chamador usa o resumo curto.
+    """
+    if not _gmail_ready():
+        return []
+    try:
+        svc = _gmail_service()
+        resp = svc.users().messages().list(
+            userId="me", q="is:unread in:inbox", maxResults=limit).execute()
+        out = []
+        for m in resp.get("messages", []):
+            full = svc.users().messages().get(
+                userId="me", id=m["id"], format="metadata",
+                metadataHeaders=["From", "Subject"]).execute()
+            hdrs = {h["name"].lower(): h["value"]
+                    for h in full.get("payload", {}).get("headers", [])}
+            out.append({
+                "sender": _friendly_sender(hdrs.get("from", "")),
+                "subject": hdrs.get("subject") or "sem assunto",
+                "snippet": (full.get("snippet") or "").strip(),
+            })
+        return out
+    except Exception as e:
+        log.warning("unread_details falhou: %s", e)
+        return []
+
+
 def _gmail_mark_read(params: dict) -> str:
     limit = max(1, min(int(params.get("limit", 10)), 25))
     svc   = _gmail_service()

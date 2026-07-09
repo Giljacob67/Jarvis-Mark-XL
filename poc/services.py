@@ -96,7 +96,9 @@ class TelegramService:
 
             async def _synth() -> bytes:
                 voice = _cfg().get("telegram_tts_voice", "pt-BR-AntonioNeural")
-                comm = edge_tts.Communicate(text[:800], voice)
+                # 4000 ≈ 4-5 min de fala — o podcast matinal cabe inteiro
+                # (o teto antigo de 800 decapitava qualquer narração)
+                comm = edge_tts.Communicate(text[:4000], voice)
                 buf = bytearray()
                 async for ch in comm.stream():
                     if ch["type"] == "audio":
@@ -248,28 +250,29 @@ class ProactiveService:
                                                "22:30-07:00")):
                     time.sleep(60); continue
 
-                # briefing matinal (modo completo, com histórico)
+                # briefing matinal — podcast narrado (proactive_briefing_mode
+                # volta para 'completo' se o usuário preferir o telegráfico)
                 slot = str(cfg.get("proactive_morning_briefing", "08:30"))
                 if time_slot_due(now, slot, self._state.get("briefing_date"),
                                  grace_min=180):
                     self._state["briefing_date"] = now.strftime("%Y-%m-%d")
                     self._save()
                     from poc.briefing import generate
-                    self._announce(generate("completo"))
+                    self._announce(generate(
+                        cfg.get("proactive_briefing_mode", "podcast")))
 
-                # checagens de e-mail (só fala se houver não lidos)
+                # checagens de e-mail — boletim NARRADO (só fala se houver
+                # não lidos; conteúdo via snippets, não só assuntos)
                 done = self._state.setdefault("email_checks", {})
                 for s in cfg.get("proactive_email_checks",
                                  ["12:00", "15:30", "18:00"]):
                     if time_slot_due(now, s, done.get(s)):
                         done[s] = now.strftime("%Y-%m-%d")
                         self._save()
-                        from actions.email_tool import unread_summary
-                        n, top = unread_summary(limit=1)
-                        if n and top:
-                            self._announce(
-                                f"Senhor, {n} e-mails não lidos. O mais recente "
-                                f"é de {top[0][0]}: {top[0][1]}.")
+                        from poc.briefing import email_bulletin
+                        text = email_bulletin()
+                        if text:
+                            self._announce(text)
                         break
 
                 # radar de prazos: varre o Gmail a cada radar_interval_min
