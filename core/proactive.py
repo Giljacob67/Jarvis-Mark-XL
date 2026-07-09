@@ -136,6 +136,7 @@ class ProactiveEngine:
     def _loop(self) -> None:
         # Let startup speech ("Jarvis fully online") settle first.
         time.sleep(20)
+        self._last_metrics_log = time.time()
         while True:
             try:
                 if self._enabled() and self._can_speak_now():
@@ -143,9 +144,21 @@ class ProactiveEngine:
                     self._check_morning_briefing()
                     self._check_emails()
                     self._check_legal_radar()
+                self._maybe_log_metrics()
             except Exception as e:
                 log.error("proactive tick failed: %s", e)
             time.sleep(_TICK_SECONDS)
+
+    def _maybe_log_metrics(self) -> None:
+        """Log a latency summary every 30 minutes (observability)."""
+        try:
+            from core.metrics import summary_line
+            now = time.time()
+            if now - getattr(self, "_last_metrics_log", 0) >= 1800:
+                self._last_metrics_log = now
+                log.info("metrics: %s", summary_line())
+        except Exception:
+            pass
 
     # ── checks ───────────────────────────────────────────────────────────
     def _check_morning_briefing(self) -> None:

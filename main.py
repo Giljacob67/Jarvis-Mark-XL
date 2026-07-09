@@ -117,6 +117,7 @@ from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
 from core.llm_client import call_llm, call_llm_stream, get_llm_settings
 from core.persona import JARVIS_IDENTITY
+from core.metrics import record
 from core.logger import get_logger
 
 log = get_logger("jarvis")
@@ -1196,6 +1197,8 @@ class JarvisLocal:
 
         _duration_ms = int((time.time() - _t0) * 1000)
         log.info("Tool %s completed in %dms", name, _duration_ms)
+        record("tool", _duration_ms)
+        record(f"tool:{name}", _duration_ms)
 
         # Persist tool call to SQLite
         try:
@@ -1317,6 +1320,7 @@ class JarvisLocal:
                             _lat = int((time.time() - _t0) * 1000)
                             _route = chat_provider if _use_chat_route else "power"
                             self.ui.write_log(f"SYS: ⚡ first token {_lat}ms ({_route})")
+                            record("llm_ttft", _lat)
                     elif event["type"] == "sentence":
                         # Speak EVERY sentence as it streams in — voice included.
                         # (Previously voice turns spoke only the first sentence
@@ -1515,6 +1519,7 @@ class JarvisLocal:
 
         if stt_ms > 0:
             self.ui.write_log(f"SYS: 🎤 STT {int(stt_ms)}ms")
+            record("stt", stt_ms)
 
         if self._continuous_mode:
             self.ui.write_log(f"USER: '{text}'")
