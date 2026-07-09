@@ -26,6 +26,55 @@ def personality_prompt() -> str:
         return ""
 
 
+def list_profiles() -> str:
+    """Perfis disponíveis + qual está ativo (ferramenta 'personalidade')."""
+    try:
+        cfg = json.loads((BASE_DIR / "config" / "personality.json")
+                         .read_text(encoding="utf-8"))
+        active = cfg.get("active", "?")
+        lines = [f"{'▶ ' if n == active else ''}{n}: {p.get('descricao', '')}"
+                 for n, p in cfg.get("profiles", {}).items()]
+        return f"Perfil ativo: {active}. Disponíveis — " + "; ".join(lines)
+    except Exception as e:
+        return f"Não consegui ler os perfis: {e}"
+
+
+def set_profile(name: str) -> str:
+    """Troca o perfil ativo ('modo discreto', 'modo executivo'...).
+
+    Vale a partir do PRÓXIMO turno (o system prompt é remontado a cada
+    turno de texto; na voz, na próxima sessão ou ferramenta)."""
+    name = (name or "").strip().lower()
+    path = BASE_DIR / "config" / "personality.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if name not in cfg.get("profiles", {}):
+            return (f"Perfil '{name}' não existe. " + list_profiles())
+        cfg["active"] = name
+        path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+        return (f"Personalidade '{name}' ativada: "
+                f"{cfg['profiles'][name].get('descricao', '')}")
+    except Exception as e:
+        return f"Não consegui trocar o perfil: {e}"
+
+
+PERSONALITY_TOOL_SCHEMA = {
+    "name": "personalidade",
+    "description": "Troca ou consulta o perfil de personalidade do JARVIS "
+                   "('modo discreto', 'modo executivo', 'fica mais formal', "
+                   "'quais personalidades você tem?'). Perfis: amigavel "
+                   "(padrão), executivo, tecnico, discreto, emergencia.",
+    "properties": {
+        "action": {"type": "string", "description": "'list' ou 'set'"},
+        "profile": {"type": "string",
+                    "description": "para 'set': amigavel | executivo | "
+                                   "tecnico | discreto | emergencia"},
+    },
+    "required": [],
+}
+
+
 def system_prompt(channel: str = "voice") -> str:
     """Prompt do agente. channel: 'voice' (falado) | 'text' (Telegram)."""
     if channel == "voice":
@@ -65,8 +114,9 @@ def system_prompt(channel: str = "voice") -> str:
         "Crédito Rural, PR e MT) e do Tax Group (tributário). Esposa Girlene "
         "(veterinária), filha Mylena (médica), cães Oliver, Margot e Lola. "
         "Treina 6x/semana (DoomCore). Domina Python/automação. "
-        "Tom: direto, denso, sem rodeios; jurídico avançado sem explicações "
-        "básicas; pode discordar dele; use os dados com naturalidade."
+        "Ele conversa direto e denso; jurídico avançado sem explicações "
+        "básicas; pode discordar dele; use os dados com naturalidade. "
+        "O SEU tom é o do bloco [PERSONALIDADE]."
     )
     pers = personality_prompt()
     if pers:

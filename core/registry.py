@@ -129,6 +129,13 @@ def _status(args, ctx):
     return speakable()
 
 
+def _personality(args, ctx):
+    from poc.persona import list_profiles, set_profile
+    if str(args.get("action", "")).lower().strip() == "set" or args.get("profile"):
+        return set_profile(args.get("profile", ""))
+    return list_profiles()
+
+
 def _mem(method: str):
     def run(args, ctx):
         from memory.layered import get_memory
@@ -151,6 +158,7 @@ def _build() -> dict[str, Tool]:
     from core.health import HEALTH_TOOL_SCHEMA
     from memory.layered import MEMORY_TOOL_SCHEMAS
     from poc.briefing import BRIEFING_TOOL_SCHEMA
+    from poc.persona import PERSONALITY_TOOL_SCHEMA
     from poc.radar import RADAR_TOOL_SCHEMA
 
     tools = [
@@ -170,12 +178,13 @@ def _build() -> dict[str, Tool]:
                          "description": "O que o usuário quer saber da tela"}}),
     ]
     handlers = {"briefing": _briefing, "radar_prazos": _radar,
-                "status_sistema": _status,
+                "status_sistema": _status, "personalidade": _personality,
                 "remember": _mem("remember"), "recall": _mem("recall"),
                 "forget": _mem("forget"),
                 "context_summary": _mem("context_summary")}
     for s in [*MEMORY_TOOL_SCHEMAS, BRIEFING_TOOL_SCHEMA,
-              RADAR_TOOL_SCHEMA, HEALTH_TOOL_SCHEMA]:
+              RADAR_TOOL_SCHEMA, HEALTH_TOOL_SCHEMA,
+              PERSONALITY_TOOL_SCHEMA]:
         tools.append(Tool(s["name"], handlers[s["name"]],
                           description=s["description"],
                           properties=s["properties"],

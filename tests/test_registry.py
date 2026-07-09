@@ -53,6 +53,6 @@ def test_dispatch_status_sistema():
 def test_registry_cobre_o_que_o_bridge_expunha():
     esperadas = {"calendar", "email_tool", "web_search", "notes", "timer",
                  "open_app", "screen_look", "briefing", "radar_prazos",
-                 "status_sistema", "remember", "recall", "forget",
-                 "context_summary"}
+                 "status_sistema", "personalidade", "remember", "recall",
+                 "forget", "context_summary"}
     assert esperadas == set(all_tools().keys())

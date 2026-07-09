@@ -51,6 +51,7 @@ RISK_MATRIX: dict[str, str | dict[str, str]] = {
     "radar_prazos":    {"list": "low", "scan": "medium",
                         "baixar": "medium", "*": "low"},
     "status_sistema":  "low",
+    "personalidade":   {"list": "low", "set": "medium", "*": "low"},
     "screen_look":     "medium",   # privacidade: nunca 'low'; modo privado no satélite
     "remember":        "medium",
     "recall":          "low",
