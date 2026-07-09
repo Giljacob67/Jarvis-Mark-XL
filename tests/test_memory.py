@@ -137,3 +137,28 @@ def test_forget_existing(tmp_path):
 def test_forget_nonexistent():
     result = forget("nonexistent_key", "notes")
     assert "Not found" in result
+
+
+# ── Cross-session recall ──────────────────────────────────────────────────
+
+def test_get_recent_context_excludes_current_and_bounds(tmp_path):
+    db = tmp_path / "conversations.db"
+    with patch("memory.conversation_db._DB_PATH", db):
+        from memory import conversation_db as cdb
+
+        cdb.init_db()
+        # Previous conversation with content
+        old = cdb.create_conversation("old")
+        cdb.add_message(old, "user", "Qual o prazo da ação X?")
+        cdb.add_message(old, "assistant", "O prazo é 15/08.")
+        # Current (empty) conversation must be excluded
+        cur = cdb.create_conversation("cur")
+
+        ctx = cdb.get_recent_context(exclude_conv_id=cur)
+        assert "15/08" in ctx
+        assert len(ctx) <= 1400
+
+        # With nothing but the current conv, recall is empty
+        empty = cdb.get_recent_context(exclude_conv_id=old)
+        assert empty == ""
+

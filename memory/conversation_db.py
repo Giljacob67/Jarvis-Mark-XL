@@ -266,6 +266,39 @@ def search_messages(query: str, limit: int = 20) -> list[dict]:
 
 # ── Stats ──────────────────────────────────────────────────────────────────
 
+def get_recent_context(exclude_conv_id: int | None = None,
+                       max_convs: int = 3,
+                       max_msgs: int = 24,
+                       max_chars: int = 1400) -> str:
+    """Compact cross-session memory for the LLM: recent user/assistant turns
+    from the previous conversations (excluding the current one). Bounded so it
+    stays cheap to inject every turn. Returns '' when there is nothing.
+    """
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 6"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    convs = [r["id"] for r in rows if r["id"] != exclude_conv_id][:max_convs]
+    if not convs:
+        return ""
+
+    blocks: list[str] = []
+    for cid in convs:
+        msgs = get_messages_as_dicts(cid, limit=max_msgs)
+        if not msgs:
+            continue
+        blocks.append("\n".join(f"{m['role']}: {m['content']}" for m in msgs))
+
+    text = "\n\n".join(blocks)
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit("\n", 1)[0]
+    return text
+
+
 def get_stats() -> dict:
     """Return database statistics."""
     conn = _get_conn()

@@ -698,6 +698,9 @@ class JarvisLocal:
                 parts.append(profile)
             if mem_str:
                 parts.append(mem_str)
+            recall = self._recall_context()
+            if recall:
+                parts.append(recall)
             parts.append(time_ctx)
             return "\n\n".join(parts)
 
@@ -710,8 +713,29 @@ class JarvisLocal:
             parts.append(profile)
         if mem_str:
             parts.append(mem_str)
+        recall = self._recall_context()
+        if recall:
+            parts.append(recall)
         parts.append(time_ctx)
         return "\n\n".join(parts)
+
+    def _recall_context(self) -> str:
+        """Cross-session memory: recent turns from previous conversations.
+
+        Bounded and injected as context-only — the assistant should not cite
+        it verbatim unless relevant. Returns '' when there is nothing.
+        """
+        try:
+            from memory.conversation_db import get_recent_context
+            ctx = get_recent_context(getattr(self, "_conv_id", None))
+            if ctx:
+                return (
+                    "[RECENT CONVERSATIONS — context only, do not recite unless "
+                    f"relevant]\n{ctx}"
+                )
+        except Exception:
+            pass
+        return ""
 
     # ------------------------------------------------------------------
     # Speaking state & TTS
