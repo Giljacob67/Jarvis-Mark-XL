@@ -142,6 +142,7 @@ class ProactiveEngine:
                     self._check_event_reminders()
                     self._check_morning_briefing()
                     self._check_emails()
+                    self._check_legal_radar()
             except Exception as e:
                 log.error("proactive tick failed: %s", e)
             time.sleep(_TICK_SECONDS)
@@ -194,6 +195,74 @@ class ProactiveEngine:
         except Exception as e:
             log.warning("briefing phrasing failed: %s", e)
             return None
+
+    def _check_legal_radar(self) -> None:
+        """Opt-in scan for court/tribunal deadlines in unread e-mail.
+
+        Runs on its own schedule (proactive_legal_radar_slots, defaulting to
+        the email-check slots). For each NEW deadline it creates a local
+        calendar event and announces it once. Fully fail-closed.
+        """
+        if not self._cfg("proactive_legal_radar_enabled", False):
+            return
+
+        slots = self._cfg("proactive_legal_radar_slots",
+                          self._cfg("proactive_email_checks",
+                                    ["12:00", "15:30", "18:00"]))
+        if isinstance(slots, str):
+            slots = [s.strip() for s in slots.split(",") if s.strip()]
+
+        now = datetime.now()
+        last = self._state.setdefault("legal_radar_last", {})
+        fired = False
+        for s in slots:
+            if time_slot_due(now, s, last.get(s)):
+                last[s] = now.strftime("%Y-%m-%d")
+                fired = True
+        if not fired:
+            return
+        self._save_state()
+
+        from actions.legal_radar import scan_legal_deadlines
+        from actions.calendar_tool import calendar_tool
+
+        try:
+            deadlines = scan_legal_deadlines(limit=10)
+        except Exception as e:
+            log.error("legal radar scan falhou: %s", e)
+            return
+
+        if not deadlines:
+            return
+
+        tracked = self._state.setdefault("legal_radar", {})
+        announced: list[dict] = []
+        for d in deadlines:
+            key = f"{d['title']}|{d['deadline']}"
+            if key in tracked:
+                continue
+            tracked[key] = now.strftime("%Y-%m-%d")
+            try:
+                calendar_tool(parameters={
+                    "action": "create",
+                    "title": f"⚖ {d['title']} (prazo)",
+                    "start": d["deadline"],
+                })
+            except Exception as e:
+                log.warning("falha ao criar evento juridico: %s", e)
+            announced.append(d)
+
+        if announced:
+            # Trim entries older than 30 days so state doesn't grow forever.
+            cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+            self._state["legal_radar"] = {k: v for k, v in tracked.items() if v >= cutoff}
+            self._save_state()
+            lines = "; ".join(
+                f"{a['title']} até {a['deadline']}" for a in announced
+            )
+            self._say(
+                f"Senhor, detectei {len(announced)} prazo(s) juridico(s): {lines}."
+            )
 
     def _check_emails(self) -> None:
         slots = self._cfg("proactive_email_checks", ["12:00", "15:30", "18:00"])

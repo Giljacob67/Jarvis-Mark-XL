@@ -271,6 +271,116 @@ def unread_summary(limit: int = 3) -> tuple[int, list[tuple[str, str]]]:
         return 0, []
 
 
+def _body_text(msg) -> str:
+    """Plain-text body from an email.message.Message (multipart-safe)."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            disp = str(part.get("Content-Disposition", ""))
+            if part.get_content_type() == "text/plain" and "attachment" not in disp:
+                try:
+                    return part.get_payload(decode=True).decode(
+                        part.get_content_charset() or "utf-8", errors="replace")
+                except Exception:
+                    pass
+        return ""
+    try:
+        return msg.get_payload(decode=True).decode(
+            msg.get_content_charset() or "utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def fetch_recent_bodies(limit: int = 10) -> list[dict]:
+    """[sender, subject, body] for recent UNREAD inbox mail. Never marks read
+    (BODY.PEEK / Gmail format=full). Returns [] on any error — proactive-safe.
+    """
+    limit = max(1, min(int(limit), 15))
+    if _gmail_ready():
+        try:
+            return _gmail_bodies(limit)
+        except Exception as e:
+            log.warning("Gmail bodies falhou (%s) — IMAP", e)
+    try:
+        return _imap_bodies(limit)
+    except Exception as e:
+        log.warning("fetch_recent_bodies failed: %s", e)
+        return []
+
+
+def _gmail_body_text(msg) -> str:
+    import base64
+    payload = msg.get("payload", {})
+    parts = payload.get("parts") or (
+        [payload] if payload.get("mimeType") == "text/plain" else [])
+    texts = []
+    for p in parts:
+        if p.get("mimeType") == "text/plain":
+            data = p.get("body", {}).get("data")
+            if data:
+                try:
+                    texts.append(base64.urlsafe_b64decode(data).decode("utf-8", "replace"))
+                except Exception:
+                    pass
+        elif p.get("parts"):
+            for sp in p["parts"]:
+                if sp.get("mimeType") == "text/plain":
+                    data = sp.get("body", {}).get("data")
+                    if data:
+                        try:
+                            texts.append(base64.urlsafe_b64decode(data).decode("utf-8", "replace"))
+                        except Exception:
+                            pass
+    return "\n".join(texts)[:4000]
+
+
+def _gmail_bodies(limit: int) -> list[dict]:
+    svc = _gmail_service()
+    resp = svc.users().messages().list(
+        userId="me", q="is:unread in:inbox", maxResults=limit).execute()
+    out = []
+    for m in resp.get("messages", []):
+        msg = svc.users().messages().get(
+            userId="me", id=m["id"], format="full").execute()
+        hdrs = {h["name"].lower(): h["value"]
+                for h in msg.get("payload", {}).get("headers", [])}
+        out.append({
+            "sender": _friendly_sender(hdrs.get("from", "")),
+            "subject": _decode_hdr(hdrs.get("subject")) or "sem assunto",
+            "body": _gmail_body_text(msg),
+        })
+    return out
+
+
+def _imap_bodies(limit: int) -> list[dict]:
+    import email as _email
+    cfg = _load_config()
+    mail = _connect_imap({}, cfg)
+    if mail is None:
+        return []
+    try:
+        mail.select("INBOX", readonly=True)
+        _, data = mail.search(None, "UNSEEN")
+        ids = data[0].split()[-limit:]
+        out = []
+        for mid in reversed(ids):
+            try:
+                _, d = mail.fetch(mid, "(BODY.PEEK[])")
+                msg = _email.message_from_bytes(d[0][1])
+                out.append({
+                    "sender": _friendly_sender(msg.get("From", "")),
+                    "subject": _decode_hdr(msg.get("Subject")) or "sem assunto",
+                    "body": _body_text(msg),
+                })
+            except Exception:
+                continue
+        return out
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
 def _search_email(params: dict) -> str:
     """IMAP search by sender / subject / recency — result is voice-friendly."""
     cfg        = _load_config()
