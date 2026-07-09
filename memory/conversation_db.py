@@ -266,6 +266,31 @@ def search_messages(query: str, limit: int = 20) -> list[dict]:
 
 # ── Stats ──────────────────────────────────────────────────────────────────
 
+def get_recent_messages(exclude_conv_id: int | None = None,
+                         max_convs: int = 3,
+                         max_msgs: int = 20) -> list[str]:
+    """Flat list of 'role: content' lines from previous conversations.
+
+    Used as candidate corpus for semantic retrieval (memory/semantic.py).
+    """
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 6"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    convs = [r["id"] for r in rows if r["id"] != exclude_conv_id][:max_convs]
+    out: list[str] = []
+    for cid in convs:
+        for m in get_messages_as_dicts(cid, limit=max_msgs):
+            content = (m.get("content") or "").strip()
+            if content:
+                out.append(f"{m['role']}: {content}")
+    return out
+
+
 def get_recent_context(exclude_conv_id: int | None = None,
                        max_convs: int = 3,
                        max_msgs: int = 24,

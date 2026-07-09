@@ -684,7 +684,7 @@ class JarvisLocal:
     # System prompt
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self, chat_mode: bool = False) -> str:
+    def _build_system_prompt(self, chat_mode: bool = False, query: str | None = None) -> str:
         now = datetime.now()
         time_ctx = f"[NOW] {now.strftime('%A, %d %b %Y %H:%M')}"
 
@@ -716,10 +716,55 @@ class JarvisLocal:
         recall = self._recall_context()
         if recall:
             parts.append(recall)
-        parts.append(time_ctx)
-        return "\n\n".join(parts)
+            parts.append(time_ctx)
+            return "\n\n".join(parts)
 
-    def _recall_context(self) -> str:
+    def _recall_context(self, query: str | None = None) -> str:
+        """Memory recall for the LLM context.
+
+        When a query is available, ranks long-term memories + recent
+        conversation turns by *relevance* (semantic retrieval, local-first).
+        Falls back to simple recency when there is no query or retrieval fails.
+        Returns '' when there is nothing.
+        """
+        if query:
+            try:
+                from memory.semantic import retrieve_relevant
+                from memory.memory_manager import load_memory
+                from memory.conversation_db import get_recent_messages
+
+                candidates: list[str] = []
+                mem = load_memory()
+                for cat, items in mem.items():
+                    if isinstance(items, dict):
+                        for key, entry in items.items():
+                            val = entry.get("value") if isinstance(entry, dict) else entry
+                            if val:
+                                candidates.append(f"[{cat}] {key}: {val}")
+                candidates += get_recent_messages(
+                    getattr(self, "_conv_id", None), max_convs=3, max_msgs=20)
+
+                rel = retrieve_relevant(query, candidates, k=6, max_chars=1200)
+                if rel:
+                    return (
+                        "[RELEVANT CONTEXT — use only if relevant, do not recite "
+                        f"verbatim]\n{rel}"
+                    )
+            except Exception:
+                pass
+
+        # Fallback: recent conversations (recency), bounded.
+        try:
+            from memory.conversation_db import get_recent_context
+            ctx = get_recent_context(getattr(self, "_conv_id", None))
+            if ctx:
+                return (
+                    "[RECENT CONVERSATIONS — context only, do not recite unless "
+                    f"relevant]\n{ctx}"
+                )
+        except Exception:
+            pass
+        return ""
         """Cross-session memory: recent turns from previous conversations.
 
         Bounded and injected as context-only — the assistant should not cite
@@ -1230,7 +1275,7 @@ class JarvisLocal:
         tools_for_turn = OLLAMA_TOOLS if needs_tools else None
 
         messages = [
-            {"role": "system", "content": self._build_system_prompt(chat_mode=chat_mode)}
+            {"role": "system", "content": self._build_system_prompt(chat_mode=chat_mode, query=user_text)}
         ] + list(self._conversation)
 
         # Tools whose output needs a second LLM round to summarise/interpret.
