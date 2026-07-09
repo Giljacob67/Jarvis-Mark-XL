@@ -35,6 +35,33 @@ def _client_and_model():
             CFG.get("llm_model", "openai/gpt-oss-120b"))
 
 
+def chat_once(messages: list[dict], max_tokens: int = 1500) -> str:
+    """Uma completion SEM tools, resiliente: Cerebras (retry no 429/erro
+    transitório) → Groq. Para fraseio de briefing/boletins — não para turnos."""
+    import time as _time
+
+    from openai import OpenAI
+    attempts = [_client_and_model()]
+    if CFG.get("groq_api_key", "").strip():
+        attempts.append((OpenAI(api_key=CFG["groq_api_key"],
+                                base_url="https://api.groq.com/openai/v1"),
+                         CFG.get("llm_model", "openai/gpt-oss-120b")))
+    last: Exception | None = None
+    for i, (client, model) in enumerate(attempts):
+        for retry in range(2):
+            try:
+                resp = client.chat.completions.create(
+                    model=model, max_tokens=max_tokens, messages=messages)
+                text = (resp.choices[0].message.content or "").strip()
+                if text:
+                    return text
+            except Exception as e:
+                last = e
+                logger.warning(f"chat_once {model} tentativa {retry + 1}: {e}")
+                _time.sleep(2)
+    raise last or RuntimeError("chat_once: nenhum provedor respondeu")
+
+
 def _openai_tools() -> list[dict]:
     """Ferramentas do bridge no formato OpenAI (mesma fonte da voz)."""
     from poc.tools_bridge import build_tools

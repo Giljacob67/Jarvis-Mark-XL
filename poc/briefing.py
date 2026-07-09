@@ -169,8 +169,7 @@ def generate(mode: str = "medio", question: str | None = None) -> str:
     facts = gather_facts(rich=(mode == "podcast"))
     facts_txt = "\n".join(f"- {k}: {v}" for k, v in facts.items())
 
-    from poc.text_agent import _client_and_model
-    client, model = _client_and_model()
+    from poc.text_agent import chat_once
     ask = question or "Briefing do dia."
     sys_p = (
         "Você é o JARVIS falando o briefing matinal do Dr. Gilberto (advogado, "
@@ -182,13 +181,11 @@ def generate(mode: str = "medio", question: str | None = None) -> str:
         "Se um prazo processual aparecer na agenda, ele vem PRIMEIRO."
     )
     try:
-        resp = client.chat.completions.create(
-            # gpt-oss: reasoning consome o orçamento — podcast precisa de folga
-            model=model, max_tokens=2500 if mode == "podcast" else 1500,
-            messages=[{"role": "system", "content": sys_p},
-                      {"role": "user", "content": f"{ask}\n\nFATOS:\n{facts_txt}"}],
-        )
-        text = (resp.choices[0].message.content or "").strip()
+        # gpt-oss: reasoning consome o orçamento — podcast precisa de folga
+        text = chat_once(
+            [{"role": "system", "content": sys_p},
+             {"role": "user", "content": f"{ask}\n\nFATOS:\n{facts_txt}"}],
+            max_tokens=2500 if mode == "podcast" else 1500)
     except Exception as e:
         logger.warning(f"fraseio do briefing falhou ({e}) — template")
         text = "Bom dia, senhor. " + " ".join(f"{k}: {v}." for k, v in facts.items())
@@ -216,8 +213,7 @@ def email_bulletin() -> str:
         logger.warning(f"boletim de e-mail falhou: {e}")
         return ""
 
-    from poc.text_agent import _client_and_model
-    client, model = _client_and_model()
+    from poc.text_agent import chat_once
     sys_p = (
         "Você é o JARVIS dando um boletim FALADO de e-mails ao Dr. Gilberto "
         "(advogado, Maringá/PR), em português brasileiro. Narre em 3 a 6 "
@@ -227,15 +223,10 @@ def email_bulletin() -> str:
         "quem lê lista. Números por extenso. Não invente nada além dos fatos."
     )
     try:
-        resp = client.chat.completions.create(
-            model=model, max_tokens=1500,
-            messages=[{"role": "system", "content": sys_p},
-                      {"role": "user", "content":
-                       f"{len(det)} de {n} não lidos, mais recentes:\n{facts}"}],
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        if text:
-            return text
+        return chat_once(
+            [{"role": "system", "content": sys_p},
+             {"role": "user", "content":
+              f"{len(det)} de {n} não lidos, mais recentes:\n{facts}"}])
     except Exception as e:
         logger.warning(f"fraseio do boletim falhou ({e}) — resumo simples")
     return (f"Senhor, {n} e-mails não lidos. O mais recente é de "
