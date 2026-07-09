@@ -87,18 +87,77 @@ rodar no VPS: `tailscale serve --bg http://127.0.0.1:7860` → URL final
 `https://ubuntu-8gb-hel1-1.tail54aaa6.ts.net` (HTTPS obrigatório p/ mic
 fora de localhost). iPhone/Mac: abrir a URL + "Adicionar à Tela de Início".
 
+## Capítulo 5 — Fase 2 fechada + Radar de Prazos (08/jul)
+
+Um dia denso. **Satélite completo**: `screen_look` validado (2,6s) — o
+GNOME 50/Wayland matou o gnome-screenshot CLI; captura agora via
+xdg-desktop-portal (`satellite/portal_shot.py`, Python do sistema, exige
+`flatpak permission-set screenshot screenshot '' yes` uma vez); visão
+Groq llama-4-scout primária (~3s), gemma4 local medido em ~150s/resposta
+em CPU (inviável — fallback ou `vision_prefer_local`).
+
+**Radar de Prazos (Fase 4, maior valor)**: `poc/radar.py` — Gmail
+`from:jus.br` → extração LLM (SÓ extração) → data-limite DETERMINÍSTICA
+(dias úteis CPC 219/224, feriados PR/Maringá, Páscoa por Gauss, recesso
+20/dez–20/jan) → `memory/prazos.jsonl` + evento no Calendar + briefing +
+tool de voz (list/scan/baixar). Lição validada em e-mails reais do e-Proc
+TJSC: "Confirmada a intimação eletrônica" se diz "meramente informativa",
+mas o prazo ESTÁ correndo → prazo presumido de 15 úteis, a conferir.
+
+**Fase 2 restante, tudo entregue**: memória semântica (`memory/semantic.py`,
+fastembed MiniLM multilíngue + sqlite-vec; ATENÇÃO: fastembed devolve mean
+pooling CRU → normalizar; piso 0.35 calibrado pt-BR; recall híbrido);
+observabilidade (`core/health.py`, heartbeats + tool `status_sistema` +
+briefing abre com ALERTA se o radar parar; "nunca bateu" não alarma);
+**registry unificado** (`core/registry.py` — ferramenta nova = 1 entrada
+em TOOLS + risco na RISK_MATRIX; tools_bridge virou só ponte Pipecat).
+G1 aposentada: `run.sh` e atalhos do desktop abrem o cliente v2 no Chrome
+`--app`; main.py é arqueologia. Chave Cerebras rotacionada.
+
+## Capítulo 6 — O iPhone mudo e o podcast (08–09/jul)
+
+Sintoma: "ele me escuta, fica em pensando e não responde". Diagnóstico por
+camadas nos logs AO VIVO do VPS: conexão OK (Safari iOS NÃO expõe a
+interface Tailscale nos candidatos ICE — fecha por prflx), STT OK, LLM OK…
+e DUAS causas empilhadas na saída: (1) autoplay do iOS — play() fora do
+gesto, rejeição engolida por catch vazio → build v5 do voz.html destrava
+no gesto, erro visível, medidor 🔊 de áudio chegando; (2) **cota do
+ElevenLabs ZEROU** (starter 40k/mês) — websocket fecha contexto sem áudio,
+0 BotStartedSpeaking, presence preso em thinking. Assinatura no log:
+"force-completing slot with remaining text". Saída: `poc/edge_tts_service.py`
+(edge-tts → ffmpeg → PCM, ~1s TTFB, mesma voz Antonio do Telegram),
+seleção por `tts_provider` no config.
+
+**Proatividade em modo podcast** (pedido do usuário: "narrar como um
+podcast"): briefing matinal de 200-350 palavras narradas com o CONTEÚDO
+dos e-mails (`unread_details`, snippets do Gmail), notícias via DDG
+(`briefing_news_queries`), boletins narrados nos slots de e-mail
+(`email_bulletin`), teto do TTS do Telegram 800→4000 chars (decapitava a
+narração), fraseio resiliente `chat_once` (retry + fallback Groq — o 429
+da Cerebras derrubava o podcast para o template cru). Validado com envio
+real no Telegram (405 palavras, texto+áudio).
+
+**Personalidade**: "robótico" era o perfil 'executivo' ativo por design.
+Perfil 'amigavel' reescrito (parceiro de conversa) e promovido a padrão;
+ferramenta `personalidade` (list/set) troca por voz ("modo discreto" em
+reunião) — no teste ele trocou DE VERDADE no meio da conversa.
+
 ## Pendências e próximos capítulos
 
-- [ ] Clique do Tailscale Serve (acima) + validar da tailnet
-- [ ] Rotacionar chaves Cerebras e Telegram (passaram pelo chat)
-- [ ] Fase 3b: satélite de desktop (RPC tailnet) p/ open_app e afins
-- [ ] Migrar Telegram + proatividade do app antigo p/ o servidor v2
-- [ ] Aposentar loop de voz do app Qt (main.py) — manter só painel/legado
-- [ ] **Fase 4 — Radar de prazos jurídico** (maior valor): parser de
-      e-mails de tribunal (Projudi/PJe/e-Proc) → extrai prazo/processo →
-      Google Calendar + briefing matinal + lembretes escalonados
+- [x] Tailscale Serve + cliente iPhone (URL /voz, build v5)
+- [x] Rotacionar chave Cerebras · [ ] rotacionar token Telegram (BotFather)
+- [x] Satélite de desktop (open_app + screen_look validados e2e)
+- [x] Telegram + proatividade no servidor v2 (24/7, gate JARVIS_SERVICES)
+- [x] Aposentar loop de voz Qt (run.sh → Chrome --app; main.py arqueologia)
+- [x] Radar de prazos jurídico (Fase 4) — aguardando 1ª intimação real
+- [ ] Voltar TTS p/ ElevenLabs quando a cota renovar (09/jul 20:54) —
+      `tts_provider: "elevenlabs"` nas duas máquinas
+- [ ] BUG: data channel do HUD não abre (SCTP não estabelece; só a bolinha
+      de estados — áudio não é afetado). Curioso: funcionou 1x em 09/jul.
 - [ ] Poda de histórico na v2 (contexto 8k da Cerebras em sessões longas)
-- [ ] Merge `pipecat-poc` → `main` quando a v2 absorver Telegram/proatividade
+- [ ] Merge `pipecat-poc` → `main` (a v2 já absorveu tudo; falta o merge)
+- [ ] Modo offline "degradado honesto" · wake word (só se voltar o
+      "sempre ouvindo")
 
 ## Convenções de trabalho
 
