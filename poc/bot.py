@@ -93,18 +93,27 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         ),
     )
 
-    tts = ElevenLabsTTSService(
-        api_key=CFG["elevenlabs_api_key"],
-        settings=ElevenLabsTTSService.Settings(
-            voice=CFG.get("tts_voice", "GIuLCSVfgJaUuh7hYOY8"),
-            model=CFG.get("tts_model", "eleven_turbo_v2_5"),
-            language="pt",
-            # NÃO usar apply_text_normalization: o turbo v2.5 não suporta em
-            # websocket streaming — o ElevenLabs fecha o contexto SEM áudio
-            # (resposta muda com TTFB de 59s). Números por extenso já vêm do
-            # prompt da persona.
-        ),
-    )
+    # TTS por config: "elevenlabs" (padrão) ou "edge" (gratuito, mesma voz
+    # do Telegram). Trocar quando a cota do ElevenLabs zerar — sintoma: bot
+    # mudo em "pensando", websocket fecha contexto sem áudio (2026-07-08).
+    if CFG.get("tts_provider", "elevenlabs") == "edge":
+        from poc.edge_tts_service import EdgeTTSService
+        tts = EdgeTTSService(voice=CFG.get("edge_tts_voice",
+                                           "pt-BR-AntonioNeural"))
+        logger.info("TTS: EdgeTTS (fallback gratuito)")
+    else:
+        tts = ElevenLabsTTSService(
+            api_key=CFG["elevenlabs_api_key"],
+            settings=ElevenLabsTTSService.Settings(
+                voice=CFG.get("tts_voice", "GIuLCSVfgJaUuh7hYOY8"),
+                model=CFG.get("tts_model", "eleven_turbo_v2_5"),
+                language="pt",
+                # NÃO usar apply_text_normalization: o turbo v2.5 não suporta
+                # em websocket streaming — o ElevenLabs fecha o contexto SEM
+                # áudio (resposta muda com TTFB de 59s). Números por extenso
+                # já vêm do prompt da persona.
+            ),
+        )
 
     # gpt-oss-120b: tool calling disciplinado (o llama-3.3 emite chamadas
     # como TEXTO '<function=...>' no meio da fala e envenena o histórico).
@@ -204,8 +213,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         presence.listening()
         context.add_message({
             "role": "user",
-            "content": "Cumprimente o usuário em uma frase curta e diga que esta "
-                       "é a nova voz de testes.",
+            "content": "Cumprimente o usuário em UMA frase curta, adequada à "
+                       "hora do dia, e diga que está às ordens.",
         })
         await task.queue_frames([LLMRunFrame()])
 
