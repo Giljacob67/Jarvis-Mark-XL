@@ -7,7 +7,7 @@ import re
 
 from core.llm_client import call_llm_text
 from core.logger import get_logger
-from core.tools import TOOL_NAMES
+from core.tools import TOOL_NAMES, TOOL_DECLARATIONS
 
 log = get_logger("planner")
 
@@ -21,93 +21,6 @@ ABSOLUTE RULES:
 - Use web_search for ANY information retrieval, research, or current data.
 - Use file_controller to save content to disk.
 - Max 5 steps. Use the minimum steps needed.
-
-AVAILABLE TOOLS AND THEIR PARAMETERS:
-
-open_app
-  app_name: string (required)
-
-web_search
-  query: string (required) — write a clear, focused search query
-  mode: "search" or "compare" (optional, default: search)
-  items: list of strings (optional, for compare mode)
-  aspect: string (optional, for compare mode)
-
-game_updater
-  action: "update" | "install" | "list" | "download_status" | "schedule" (required)
-  platform: "steam" | "epic" | "both" (optional, default: both)
-  game_name: string (optional)
-  app_id: string (optional)
-  shutdown_when_done: boolean (optional)
-
-browser_control
-  action: "go_to" | "search" | "click" | "type" | "scroll" | "get_text" | "press" | "close" (required)
-  url: string (for go_to)
-  query: string (for search)
-  text: string (for click/type)
-  direction: "up" | "down" (for scroll)
-
-file_controller
-  action: "write" | "create_file" | "read" | "list" | "delete" | "move" | "copy" | "find" | "disk_usage" (required)
-  path: string — use "desktop" for Desktop folder
-  name: string — filename
-  content: string — file content (for write/create_file)
-
-computer_settings
-  action: string (required)
-  description: string — natural language description
-  value: string (optional)
-
-computer_control
-  action: "type" | "click" | "hotkey" | "press" | "scroll" | "screenshot" | "screen_find" | "screen_click" (required)
-  text: string (for type)
-  x, y: int (for click)
-  keys: string (for hotkey, e.g. "ctrl+c")
-  key: string (for press)
-  direction: "up" | "down" (for scroll)
-  description: string (for screen_find/screen_click)
-
-screen_process
-  text: string (required) — what to analyze or ask about the screen
-  angle: "screen" | "camera" (optional)
-
-send_message
-  receiver: string (required)
-  message_text: string (required)
-  platform: string (required)
-
-reminder
-  date: string YYYY-MM-DD (required)
-  time: string HH:MM (required)
-  message: string (required)
-
-desktop_control
-  action: "wallpaper" | "organize" | "clean" | "list" | "task" (required)
-  path: string (optional)
-  task: string (optional)
-
-youtube_video
-  action: "play" | "summarize" | "trending" (required)
-  query: string (for play)
-
-weather_report
-  city: string (required)
-
-flight_finder
-  origin: string (required)
-  destination: string (required)
-  date: string (required)
-
-code_helper
-  action: "write" | "edit" | "run" | "explain" (required)
-  description: string (required)
-  language: string (optional)
-  output_path: string (optional)
-  file_path: string (optional)
-
-dev_agent
-  description: string (required)
-  language: string (optional)
 
 OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 {
@@ -125,7 +38,20 @@ OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 """
 
 # Keep planner in sync with the canonical tool registry (core/tools.py).
-PLANNER_PROMPT += f"\n\nALL VALID TOOL NAMES:\n{', '.join(TOOL_NAMES)}\n"
+# The tool list is generated from TOOL_DECLARATIONS so it can never drift
+# from the schema the runtime actually uses.
+PLANNER_PROMPT += "\n\nAVAILABLE TOOLS AND THEIR PARAMETERS:\n"
+for _d in TOOL_DECLARATIONS:
+    _props = _d.get("parameters", {}).get("properties", {})
+    _req = set(_d.get("parameters", {}).get("required", []))
+    PLANNER_PROMPT += f"{_d['name']}\n"
+    if _props:
+        for _pn, _pv in _props.items():
+            _mark = " (required)" if _pn in _req else ""
+            PLANNER_PROMPT += f"  {_pn}: {_pv.get('type', 'string')}{_mark}\n"
+    else:
+        PLANNER_PROMPT += "  (no parameters)\n"
+PLANNER_PROMPT += f"\nALL VALID TOOL NAMES:\n{', '.join(TOOL_NAMES)}\n"
 
 
 def create_plan(goal: str, context: str = "") -> dict:

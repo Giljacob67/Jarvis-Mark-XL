@@ -180,80 +180,26 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
 # ---------------------------------------------------------------------------
 
 def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
-    if tool == "open_app":
-        from actions.open_app import open_app
-        return open_app(parameters=parameters, player=None) or "Done."
+    """Route a single tool call through the canonical dispatcher.
 
-    elif tool == "web_search":
-        from actions.web_search import web_search
-        return web_search(parameters=parameters, player=None) or "Done."
-
-    elif tool == "game_updater":
-        from actions.game_updater import game_updater
-        return game_updater(parameters=parameters, player=None, speak=speak) or "Done."
-
-    elif tool == "browser_control":
-        from actions.browser_control import browser_control
-        return browser_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "file_controller":
-        from actions.file_controller import file_controller
-        return file_controller(parameters=parameters, player=None) or "Done."
-
-    elif tool == "code_helper":
-        from actions.code_helper import code_helper
-        return code_helper(parameters=parameters, player=None, speak=speak) or "Done."
-
-    elif tool == "dev_agent":
-        from actions.dev_agent import dev_agent
-        return dev_agent(parameters=parameters, player=None, speak=speak) or "Done."
-
-    elif tool == "screen_process":
-        from actions.screen_processor import screen_process
-        result = screen_process(parameters=parameters, player=None)
-        return result if isinstance(result, str) else "Screen captured and analyzed."
-
-    elif tool == "send_message":
-        from actions.send_message import send_message
-        return send_message(parameters=parameters, player=None) or "Done."
-
-    elif tool == "reminder":
-        from actions.reminder import reminder
-        return reminder(parameters=parameters, player=None) or "Done."
-
-    elif tool == "youtube_video":
-        from actions.youtube_video import youtube_video
-        return youtube_video(parameters=parameters, player=None) or "Done."
-
-    elif tool == "weather_report":
-        from actions.weather_report import weather_action
-        return weather_action(parameters=parameters, player=None) or "Done."
-
-    elif tool == "computer_settings":
-        from actions.computer_settings import computer_settings
-        return computer_settings(parameters=parameters, player=None) or "Done."
-
-    elif tool == "desktop_control":
-        from actions.desktop import desktop_control
-        return desktop_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "computer_control":
-        from actions.computer_control import computer_control
-        return computer_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "generated_code":
+    ``generated_code`` is preserved as an explicit, security-gated path; any
+    other unregistered tool now returns a clean error instead of silently
+    executing LLM-generated code.
+    """
+    if tool == "generated_code":
         description = parameters.get("description", "")
         if not description:
             raise ValueError("generated_code requires a 'description' parameter.")
         return _run_generated_code(description, speak=speak)
 
-    elif tool == "flight_finder":
-        from actions.flight_finder import flight_finder
-        return flight_finder(parameters=parameters, player=None, speak=speak) or "Done."
+    from core.tool_runtime import ToolContext, dispatch
 
-    else:
-        log.warning("Unknown tool '%s' — falling back to generated_code", tool)
-        return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)
+    ctx = ToolContext(player=None, speak=speak)
+    try:
+        return dispatch(tool, parameters, ctx)
+    except KeyError:
+        log.warning("Unknown tool '%s' — no fallback", tool)
+        return f"Unknown tool: {tool}"
 
 
 # ---------------------------------------------------------------------------

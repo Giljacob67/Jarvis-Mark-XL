@@ -90,7 +90,7 @@ import sys
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -116,27 +116,13 @@ if _sys.platform == "darwin":
 from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
 from core.llm_client import call_llm, call_llm_stream, get_llm_settings
+from core.persona import JARVIS_IDENTITY
 from core.logger import get_logger
 
 log = get_logger("jarvis")
 
-from actions.file_processor    import file_processor
-from actions.flight_finder     import flight_finder
-from actions.open_app          import open_app
-from actions.weather_report    import weather_action
-from actions.send_message      import send_message
-from actions.reminder          import reminder
-from actions.computer_settings import computer_settings
-from actions.screen_processor  import screen_process
-from actions.youtube_video     import youtube_video
-from actions.desktop           import desktop_control
-from actions.browser_control   import browser_control
-from actions.file_controller   import file_controller
-from actions.code_helper       import code_helper
-from actions.dev_agent         import dev_agent
-from actions.web_search        import web_search as web_search_action
-from actions.computer_control  import computer_control
-from actions.game_updater      import game_updater
+# Action tools are imported lazily inside core.tool_runtime.dispatch — the
+# single source of truth for tool execution — so no per-tool imports live here.
 
 
 # ---------------------------------------------------------------------------
@@ -193,16 +179,17 @@ def _load_system_prompt() -> str:
         )
 
 
-# Minimal prompt for casual chat — no tool rules, ~30 tokens vs ~400+.
+# Minimal prompt for casual chat — no tool rules, persona + safety only.
 _CHAT_SYSTEM_PROMPT = (
-    "You are JARVIS, a real local voice assistant running on the user's computer. "
-    "You are NOT the fictional Marvel character — never roleplay Iron Man lore "
-    "(no Tony Stark, Natasha Romanoff, Iron Legion, missions, suits). "
+    "You are JARVIS — the user's personal AI assistant, in the spirit of Tony "
+    "Stark's JARVIS: precise, efficient, courteous and composed. Address the "
+    "user as 'sir' (English) or 'senhor' (Portuguese). "
+    "In this chat mode you have NO access to calendar or email — if asked about "
+    "them, say you can check and offer to confirm (e.g. 'Quer que eu verifique "
+    "sua agenda?'). "
     "NEVER invent facts about the user's life: appointments, meetings, emails, "
-    "tasks or files. In this chat mode you have NO access to calendar or email — "
-    "if asked about them, say you can check and ask the user to confirm "
-    "(e.g. 'Quer que eu verifique sua agenda?'). "
-    "Reply in the user's language. Max 2 short sentences. Be direct and friendly."
+    "tasks or files. Reply in the user's language. Max 2 short sentences. "
+    "Be direct and friendly."
 )
 
 
@@ -718,7 +705,7 @@ class JarvisLocal:
         sys_p   = _load_system_prompt()
         memory  = load_memory()
         mem_str = format_memory_for_prompt(memory)
-        parts = [sys_p]
+        parts = [JARVIS_IDENTITY, sys_p]
         if profile:
             parts.append(profile)
         if mem_str:
@@ -1069,162 +1056,30 @@ class JarvisLocal:
 
         _tool_timeout = _cfg.get("tool_timeout_sec", 45)
 
-        def _dispatch() -> str:
-            if name == "open_app":
-                r = open_app(parameters=args, response=None, player=self.ui)
-                return r or f"Opened {args.get('app_name')}."
+        # ── agent_task: orchestration, not a plain action ─────────────────
+        if name == "agent_task":
+            from agent.task_queue import get_queue, TaskPriority
+            priority_map = {
+                "low": TaskPriority.LOW,
+                "normal": TaskPriority.NORMAL,
+                "high": TaskPriority.HIGH,
+            }
+            priority = priority_map.get(
+                args.get("priority", "normal").lower(), TaskPriority.NORMAL
+            )
 
-            elif name == "weather_report":
-                r = weather_action(parameters=args, player=self.ui)
-                return r or "Weather delivered."
+            def _on_step(step_num: int, tool: str, desc: str) -> None:
+                self.ui.write_log(f"SYS: ⚙ step {step_num} — {tool}: {desc[:60]}")
 
-            elif name == "browser_control":
-                r = browser_control(parameters=args, player=self.ui)
-                return r or "Done."
+            task_id = get_queue().submit(
+                goal=args.get("goal", ""),
+                priority=priority,
+                speak=self.speak,
+                on_step_start=_on_step,
+            )
+            return f"Task started (ID: {task_id})."
 
-            elif name == "file_controller":
-                r = file_controller(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "send_message":
-                r = send_message(parameters=args, response=None, player=self.ui, session_memory=None)
-                return r or f"Message sent to {args.get('receiver')}."
-
-            elif name == "reminder":
-                r = reminder(parameters=args, response=None, player=self.ui)
-                return r or "Reminder set."
-
-            elif name == "youtube_video":
-                r = youtube_video(parameters=args, response=None, player=self.ui)
-                return r or "Done."
-
-            elif name == "screen_process":
-                r = screen_process(parameters=args, response=None, player=self.ui, session_memory=None)
-                return r if isinstance(r, str) and r else "Screen analyzed."
-
-            elif name == "computer_settings":
-                r = computer_settings(parameters=args, response=None, player=self.ui)
-                return r or "Done."
-
-            elif name == "desktop_control":
-                r = desktop_control(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "code_helper":
-                r = code_helper(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "dev_agent":
-                r = dev_agent(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
-                priority_map = {
-                    "low": TaskPriority.LOW,
-                    "normal": TaskPriority.NORMAL,
-                    "high": TaskPriority.HIGH,
-                }
-                priority = priority_map.get(
-                    args.get("priority", "normal").lower(), TaskPriority.NORMAL
-                )
-                def _on_step(step_num: int, tool: str, desc: str) -> None:
-                    self.ui.write_log(f"SYS: ⚙ step {step_num} — {tool}: {desc[:60]}")
-
-                task_id = get_queue().submit(
-                    goal=args.get("goal", ""),
-                    priority=priority,
-                    speak=self.speak,
-                    on_step_start=_on_step,
-                )
-                return f"Task started (ID: {task_id})."
-
-            elif name == "web_search":
-                r = web_search_action(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "file_processor":
-                if not args.get("file_path") and self.ui.current_file:
-                    args["file_path"] = self.ui.current_file
-                r = file_processor(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "computer_control":
-                r = computer_control(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "game_updater":
-                r = game_updater(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "flight_finder":
-                r = flight_finder(parameters=args, player=self.ui)
-                return r or "Done."
-
-            # New tools
-            elif name == "clipboard":
-                from actions.clipboard_tool import clipboard_tool
-                r = clipboard_tool(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "email_tool":
-                from actions.email_tool import email_tool
-                r = email_tool(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "spotify":
-                from actions.spotify_tool import spotify_tool
-                r = spotify_tool(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "notes":
-                from actions.notes_tool import notes_tool
-                r = notes_tool(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "translator":
-                from actions.translator_tool import translator_tool
-                r = translator_tool(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "timer":
-                from actions.timer_tool import timer_tool
-                r = timer_tool(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "calculator":
-                from actions.calculator_tool import calculator_tool
-                r = calculator_tool(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "notify":
-                from actions.notify_tool import notify_tool
-                r = notify_tool(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "app_installer":
-                from actions.app_installer import app_installer
-                r = app_installer(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "calendar":
-                from actions.calendar_tool import calendar_tool
-                r = calendar_tool(parameters=args, player=self.ui)
-                return r or "Done."
-
-            elif name == "visual_web":
-                from actions.visual_web import visual_web
-                r = visual_web(parameters=args, player=self.ui, speak=self.speak)
-                return r or "Done."
-
-            elif name == "smart_home":
-                from actions.kasa_tool import kasa_tool
-                r = kasa_tool(parameters=args, player=self.ui)
-                return r or "Done."
-
-            return f"Unknown tool: {name}"
-
-        # shutdown_jarvis bypasses timeout — must run in main thread context
+        # ── shutdown_jarvis: must run in the main thread context ───────────
         if name == "shutdown_jarvis":
             self.ui.write_log("SYS: Shutdown requested.")
 
@@ -1237,25 +1092,34 @@ class JarvisLocal:
             threading.Thread(target=_shutdown, daemon=True).start()
             return "Shutting down."
 
+        # ── Plain action tools: single canonical dispatcher ───────────────
+        # All action routing now lives in core.tool_runtime.dispatch, used by
+        # both this method and the agent executor — one source of truth.
+        from core.tool_runtime import ToolContext, run_with_timeout
+
+        ctx = ToolContext(
+            player=self.ui,
+            speak=self.speak,
+            response=None,
+            session_memory=None,
+            ui=self.ui,
+            current_file=getattr(self.ui, "current_file", None),
+        )
         result = "Done."
         _t0 = time.time()
         try:
-            # Long-lived executor: on timeout the future is abandoned (a running
-            # task can't be cancelled) and the pipeline moves on immediately —
-            # the old per-call `with ThreadPoolExecutor` blocked on shutdown
-            # until the hung tool actually returned.
-            _fut = self._tool_executor.submit(_dispatch)
-            try:
-                result = _fut.result(timeout=_tool_timeout)
-            except FuturesTimeout:
-                _fut.cancel()
+            result, _timed_out = run_with_timeout(
+                name, args, ctx,
+                timeout=_tool_timeout,
+                executor=self._tool_executor,
+            )
+            if _timed_out:
                 self.ui.write_log(
                     f"WARN: '{name}' ainda em execução em segundo plano (timeout {_tool_timeout}s)"
                 )
                 msg = f"A ferramenta {name} excedeu o tempo limite de {_tool_timeout} segundos."
                 self.speak(msg)
                 result = msg
-
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
             traceback.print_exc()
