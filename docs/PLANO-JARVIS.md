@@ -39,7 +39,8 @@ arquitetura limpa. Este plano funde a auditoria técnica (ver
    confirmação inteligente via permissions; perfis de personalidade em
    `config/personality.json` integrados ao prompt.
 5. HUD: cliente v2 ganha data channel — estado ao vivo (cor/rótulo por
-   estado) + ferramenta em execução.
+   estado) + ferramenta em execução; fallback HTTP em `/api/jarvis/hud`
+   mostra estado, tarefa e logs quando o data channel não abre.
 6. Testes puros para presence/permissions/memory; docs atualizados.
 
 ## Fase 2 (médio) — "Onisciente e advogado"

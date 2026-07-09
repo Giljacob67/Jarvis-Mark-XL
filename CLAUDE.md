@@ -11,7 +11,7 @@ completo em `memory/user_profile.md`, gitignored). Converse e commite em
 |---|---|---|
 | Branch | `main` | `pipecat-poc` |
 | Voz | app Qt + PortAudio (main.py) | **Pipecat 1.4 + WebRTC** (`poc/bot.py`) |
-| Cliente | janela desktop | navegador (`poc/client.html`) — AEC nativo |
+| Cliente | janela desktop | navegador (`poc/voz.html`) — AEC nativo + HUD |
 | Status | **APOSENTADA (2026-07-08)** | **validada pelo usuário**, em produção no VPS |
 
 A G1 não roda mais em lugar nenhum: `run.sh` (e os atalhos do desktop)
@@ -38,7 +38,7 @@ python3 -m venv .venv-pipecat
 .venv-pipecat/bin/pip install "pipecat-ai[silero,deepgram,openai,elevenlabs,webrtc]" \
     pipecat-ai-prebuilt fastapi "uvicorn[standard]" google-api-python-client google-auth-oauthlib
 .venv-pipecat/bin/python poc/bot.py --transport webrtc --host 0.0.0.0 --port 7860 --folder poc
-# cliente: http://localhost:7860/files/client.html  (NÃO abrir via file:// sem reload)
+# cliente: http://localhost:7860/files/voz.html  (NÃO abrir via file:// sem reload)
 ```
 
 ## Segredos (NUNCA commitar — todos gitignored)
